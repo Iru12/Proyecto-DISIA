@@ -1,0 +1,25 @@
+version: '3.9'
+
+services:
+  train:
+    build:
+        context: .
+        dockerfile: DockerFile.train
+    container_name: entrenamiento
+    command: ["sh", "-c", "python src/ingesta_datos.py && python src/preprocesamiento.py && python src/train.py"]
+    volumes:
+      - ./models_output:/app/modelos
+      - ./data_output:/app/datos/preprocesados
+  inferencia:
+    build:
+      context: .
+      dockerfile: DockerFile.inferencia
+    container_name: api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models_output:/app/modelos
+      - ./data_output:/app/datos/preprocesados
+    environment:
+      - MODELO_PATH=/app/modelos/RF_model.joblib
+      - ARTEFACTOS_PATH=/app/datos/preprocesados/artefactos_inferencia.joblib

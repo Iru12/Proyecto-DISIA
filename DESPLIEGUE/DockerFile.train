@@ -1,0 +1,12 @@
+FROM python:3.12.3
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ingesta_datos.py src/
+COPY src/preprocesamiento.py src/
+COPY src/train.py src/
+
+CMD ["sh", "-c", "python src/ingesta_datos.py && python src/preprocesamiento.py && python src/train.py"]
