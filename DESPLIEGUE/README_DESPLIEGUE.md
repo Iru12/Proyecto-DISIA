@@ -122,6 +122,17 @@ en el endpoint:
 POST /predict
 ```
 
+Respuesta esperada:
+
+```json
+{
+  "prediccion": ["normal"],
+  "prediccion_codificada": [14]
+}
+```
+
+`prediccion` contiene la etiqueta legible del modelo. `prediccion_codificada` conserva el indice numerico interno para trazabilidad.
+
 ## Cambiar modelo activo reiniciando API
 
 La API usa esta variable:

@@ -1,5 +1,6 @@
 import os
 import json
+import joblib
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from preprocesamiento import preprocesamiento_inferencia
@@ -22,12 +23,6 @@ metadata_path = os.getenv("MODEL_METADATA_PATH", "/app/modelos/current_model_met
 modelos_dir = os.path.dirname(modelo_path) or "."
 selection_history_path = os.getenv("MODEL_SELECTION_HISTORY_PATH", os.path.join(modelos_dir, "model_selection_history.jsonl"))
 modelo_lock = Lock()
-
-if not os.path.isfile(artefactos_path):
-    raise FileNotFoundError(f"El archivo de artefactos no existe: {artefactos_path}")
-
-modelo = modelo_deteccion_anomalias(modelo_path=modelo_path)
-
 
 def cargar_metadata_modelo():
     if os.path.isfile(metadata_path):
@@ -54,11 +49,48 @@ def ruta_metricas_version(model_version):
     return os.path.join(modelos_dir, f"{model_version}_metrics.json")
 
 
+def ruta_label_encoder_version(model_version):
+    return os.path.join(modelos_dir, f"{model_version}_label_encoder.joblib")
+
+
 def cargar_json_si_existe(path):
     if os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
+
+
+def cargar_label_encoder_modelo(metadata_path_activo=None, modelo_path_activo=None):
+    metadata_activa_path = metadata_path_activo or metadata_path
+    modelo_activo_path = modelo_path_activo or modelo_path
+    metadata = cargar_json_si_existe(metadata_activa_path) or {}
+
+    candidatos = []
+    model_version = metadata.get("model_version")
+    if model_version:
+        candidatos.append(ruta_label_encoder_version(model_version))
+
+    version_desde_archivo = os.path.basename(modelo_activo_path).replace(".joblib", "")
+    if version_desde_archivo != "RF_model":
+        candidatos.append(ruta_label_encoder_version(version_desde_archivo))
+
+    for candidato in candidatos:
+        if os.path.isfile(candidato):
+            return joblib.load(candidato)
+
+    return None
+
+
+def decodificar_predicciones(predicciones, label_encoder_activo):
+    if label_encoder_activo is not None:
+        return label_encoder_activo.inverse_transform(predicciones).tolist()
+
+    metadata = cargar_metadata_modelo()
+    clases = metadata.get("classes", [])
+    return [
+        clases[int(prediccion)] if int(prediccion) < len(clases) else str(prediccion)
+        for prediccion in predicciones
+    ]
 
 
 def listar_modelos_disponibles():
@@ -114,6 +146,13 @@ def leer_historial_cambios(limit=50):
 
     registros = [json.loads(linea) for linea in lineas[-limit:]]
     return list(reversed(registros))
+
+
+if not os.path.isfile(artefactos_path):
+    raise FileNotFoundError(f"El archivo de artefactos no existe: {artefactos_path}")
+
+modelo = modelo_deteccion_anomalias(modelo_path=modelo_path)
+label_encoder = cargar_label_encoder_modelo()
 
 
 class SeleccionModelo(BaseModel):
@@ -321,6 +360,7 @@ def health():
     return {
         "status": "ok",
         "model_loaded": modelo.modelo is not None,
+        "label_encoder_loaded": label_encoder is not None,
         "model_path": modelo_path,
         "artefactos_path": artefactos_path,
     }
@@ -379,7 +419,7 @@ def model_selection_history(limit: int = 50):
 
 @app.post("/admin/models/select")
 def select_model(selection: SeleccionModelo):
-    global modelo, modelo_path, metadata_path
+    global modelo, modelo_path, metadata_path, label_encoder
 
     nuevo_modelo_path = ruta_modelo_version(selection.model_version)
     nuevo_metadata_path = ruta_metadata_version(selection.model_version)
@@ -397,6 +437,10 @@ def select_model(selection: SeleccionModelo):
 
     try:
         nuevo_modelo = modelo_deteccion_anomalias(modelo_path=nuevo_modelo_path)
+        nuevo_label_encoder = cargar_label_encoder_modelo(
+            metadata_path_activo=nuevo_metadata_path,
+            modelo_path_activo=nuevo_modelo_path,
+        )
     except Exception as e:
         registrar_cambio_modelo(
             previous_model=previous_model,
@@ -410,6 +454,7 @@ def select_model(selection: SeleccionModelo):
         modelo = nuevo_modelo
         modelo_path = nuevo_modelo_path
         metadata_path = nuevo_metadata_path
+        label_encoder = nuevo_label_encoder
 
     metadata = cargar_metadata_modelo()
     registro = registrar_cambio_modelo(
@@ -448,11 +493,16 @@ def predict(input_data: List[InputParaElModelo]):
         # Realizar la predicción
         with modelo_lock:
             modelo_activo = modelo
+            label_encoder_activo = label_encoder
 
         prediccion = modelo_activo.predecir(X_preprocesado)
+        prediccion_decodificada = decodificar_predicciones(prediccion, label_encoder_activo)
         print(prediccion)
 
-        return {"prediccion": prediccion.tolist() }
+        return {
+            "prediccion": prediccion_decodificada,
+            "prediccion_codificada": prediccion.tolist(),
+        }
 
     except Exception as e:
         columnas = df_input.columns if "df_input" in locals() else []
