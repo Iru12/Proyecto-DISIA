@@ -10,9 +10,7 @@ class modelo_deteccion_anomalias:
         
         # Comprobación de la existencia del archivo del modelo
         if not os.path.isfile(modelo_path):
-            print(f"Error: El archivo del modelo no existe: {modelo_path}")
-            self.modelo = None
-            return
+            raise FileNotFoundError(f"El archivo del modelo no existe: {modelo_path}")
         
         # Cargar el modelo entrenado
         self.modelo = joblib.load(modelo_path)

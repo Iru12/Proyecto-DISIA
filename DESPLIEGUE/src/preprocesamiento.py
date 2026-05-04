@@ -9,6 +9,7 @@ from collections import Counter
 import argparse
 import os
 import joblib
+import sys
 
 def preprocesamiento_inferencia(X_input, artefactos_path):
 
@@ -263,4 +264,5 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    preprocesamiento_inicial(args.datos_crudos, args.output_dir)
+    if not preprocesamiento_inicial(args.datos_crudos, args.output_dir):
+        sys.exit(1)

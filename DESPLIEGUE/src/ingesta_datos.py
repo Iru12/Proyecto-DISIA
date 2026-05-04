@@ -1,6 +1,7 @@
 import kagglehub
 import os
 import argparse
+import sys
 
 def ingesta_datos(output_path):
 
@@ -15,10 +16,11 @@ def ingesta_datos(output_path):
         # Descargar el dataset desde Kaggle utilizando kagglehub (ya en CSV)
         kagglehub.dataset_download("munaalhawawreh/xiiotid-iiot-intrusion-dataset", output_dir = output_path)
         print("Dataset descargado exitosamente.")
+        return True
 
     except Exception as e:
         print(f"Error en la ingesta del dataset: {e}")
-        return None
+        return False
 
 
 if __name__ == "__main__":
@@ -31,4 +33,5 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    ingesta_datos(args.output_path)
+    if not ingesta_datos(args.output_path):
+        sys.exit(1)

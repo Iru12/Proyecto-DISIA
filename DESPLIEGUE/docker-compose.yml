@@ -1,15 +1,18 @@
-version: '3.9'
-
 services:
   train:
     build:
         context: .
         dockerfile: DockerFile.train
-    container_name: entrenamiento
     command: ["sh", "-c", "python src/ingesta_datos.py && python src/preprocesamiento.py && python src/train.py"]
     volumes:
       - ./models_output:/app/modelos
       - ./data_output:/app/datos/preprocesados
+    environment:
+      - MODEL_VERSION=${MODEL_VERSION:-RF_v1}
+      - N_ESTIMATORS=${N_ESTIMATORS:-120}
+      - MIN_SAMPLES_LEAF=${MIN_SAMPLES_LEAF:-2}
+      - RANDOM_STATE=${RANDOM_STATE:-42}
+      - CLASS_WEIGHT=${CLASS_WEIGHT:-balanced_subsample}
   inferencia:
     build:
       context: .
@@ -23,3 +26,11 @@ services:
     environment:
       - MODELO_PATH=/app/modelos/RF_model.joblib
       - ARTEFACTOS_PATH=/app/datos/preprocesados/artefactos_inferencia.joblib
+      - MODEL_METADATA_PATH=/app/modelos/current_model_metadata.json
+      - MODEL_SELECTION_HISTORY_PATH=/app/modelos/model_selection_history.jsonl
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
