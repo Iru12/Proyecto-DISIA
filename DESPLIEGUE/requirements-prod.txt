@@ -6,3 +6,4 @@ scikit-learn==1.8.0
 joblib==1.5.3
 kagglehub==1.0.1
 requests==2.33.1
+prometheus-client==0.23.1

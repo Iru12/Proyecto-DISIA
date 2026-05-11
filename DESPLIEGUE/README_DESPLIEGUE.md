@@ -90,6 +90,105 @@ Informacion del modelo:
 http://localhost:8000/model-info
 ```
 
+Metricas del modelo activo:
+
+```text
+http://localhost:8000/model/metrics
+```
+
+Metricas operativas en formato Prometheus:
+
+```text
+http://localhost:8000/metrics
+```
+
+Este endpoint expone, entre otras, estas metricas:
+
+```text
+api_http_requests_total
+api_http_request_duration_seconds
+api_predictions_total
+api_predictions_by_class_total
+api_active_model_info
+api_model_metric
+```
+
+Las metricas HTTP de la API excluyen endpoints internos como `/metrics` y `/health` para que Prometheus y el healthcheck no inflen el trafico de inferencia.
+
+## Levantar monitorizacion con Prometheus
+
+Prometheus recoge automaticamente las metricas de la API desde `/metrics`.
+
+```bash
+docker compose up inferencia prometheus
+```
+
+Interfaz de Prometheus:
+
+```text
+http://localhost:9090
+```
+
+Estado del target de la API:
+
+```text
+http://localhost:9090/targets
+```
+
+El target `api-inferencia` debe aparecer como `UP`.
+
+Consultas utiles para la demo:
+
+```text
+api_http_requests_total
+api_predictions_total
+api_predictions_by_class_total
+process_resident_memory_bytes
+process_cpu_seconds_total
+rate(api_http_requests_total[1m])
+rate(api_predictions_total[1m])
+```
+
+## Levantar dashboard con Grafana
+
+Grafana queda conectado automaticamente a Prometheus y carga un dashboard inicial de observabilidad.
+
+```bash
+docker compose up inferencia prometheus grafana
+```
+
+Interfaz de Grafana:
+
+```text
+http://localhost:3000
+```
+
+Credenciales locales:
+
+```text
+usuario: admin
+password: admin
+```
+
+Dashboard:
+
+```text
+Dashboards > DISIA > DISIA - Observabilidad API
+```
+
+El dashboard incluye:
+
+```text
+Resumen ejecutivo: estado de la API, modelo activo y predicciones
+Calidad del modelo desplegado
+Trafico de inferencia
+Inferencia y errores
+Recursos del proceso
+```
+
+Las secciones detalladas aparecen como desplegables para que la primera vista sea limpia.
+La seccion de trafico se centra en `POST /predict`, por lo que se activa al usar Swagger o el simulador de trafico.
+
 Modelos disponibles:
 
 ```text
@@ -113,7 +212,7 @@ http://localhost:8000/admin/models/history
 Desde Swagger, copiar el contenido de:
 
 ```text
-examples/predict_example.json
+data_output/predict_example.json
 ```
 
 en el endpoint:
@@ -132,6 +231,57 @@ Respuesta esperada:
 ```
 
 `prediccion` contiene la etiqueta legible del modelo. `prediccion_codificada` conserva el indice numerico interno para trazabilidad.
+
+## Simular trafico para observabilidad
+
+El simulador envia peticiones al endpoint `POST /predict` usando muestras reales del split de test.
+Sirve para alimentar las metricas de Prometheus y ver actividad en Grafana.
+
+El archivo usado por defecto es:
+
+```text
+data_output/X_test_api.csv
+```
+
+Este CSV se genera durante el preprocesamiento a partir del 15% reservado para test, manteniendo el formato crudo que espera la API.
+Si no existe, reconstruir la imagen de entrenamiento y regenerar artefactos:
+
+```powershell
+docker compose build train
+docker compose run --rm train
+```
+
+Con la API levantada:
+
+```powershell
+python scripts/simulate_traffic.py --mode normal
+```
+
+Modos disponibles:
+
+```powershell
+python scripts/simulate_traffic.py --mode normal
+python scripts/simulate_traffic.py --mode burst
+python scripts/simulate_traffic.py --mode slow
+```
+
+Tambien se puede ajustar manualmente:
+
+```powershell
+python scripts/simulate_traffic.py --requests 100 --delay 0.5
+```
+
+Si la API esta en otra URL:
+
+```powershell
+python scripts/simulate_traffic.py --url http://localhost:8000/predict --requests 50 --delay 1
+```
+
+Para usar el ejemplo fijo en lugar del split de test:
+
+```powershell
+python scripts/simulate_traffic.py --source example --requests 20 --delay 1
+```
 
 ## Cambiar modelo activo reiniciando API
 

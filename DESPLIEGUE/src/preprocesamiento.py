@@ -84,6 +84,7 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
         # División 70% / 15% / 15% estratificada
         X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y['class3'])
         X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=(0.15/0.85), random_state=42, stratify=y_temp['class3'])
+        X_test_api = preparar_datos_api(X_test)
 
         X_train = fix_dtype(X_train)
         X_val = fix_dtype(X_val)
@@ -195,6 +196,7 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
         X_train_final.to_csv(f'{output_dir}/X_train_final.csv', index=False)
         X_val_final.to_csv(f'{output_dir}/X_val_final.csv', index=False)
         X_test_final.to_csv(f'{output_dir}/X_test_final.csv', index=False)
+        X_test_api.to_csv(f'{output_dir}/X_test_api.csv', index=False)
 
         for split_name, y_split in [('train', y_train), ('val', y_val), ('test', y_test)]:
             for cls in ['class1', 'class2', 'class3']:
@@ -246,6 +248,21 @@ def fix_dtype(df, umbral_numerico=0.7):
         df[col] = df[col].astype(float)
 
     return df
+
+
+def preparar_datos_api(df):
+    df_api = df.copy()
+    df_api = df_api.rename(
+        columns={
+            "FIN or RST": "FIN_or_RST",
+            "Avg_num_Proc/s": "Avg_num_Proc_s",
+            "Std_num_proc/s": "Std_num_proc_s",
+            "Avg_num_cswch/s": "Avg_num_cswch_s",
+            "std_num_cswch/s": "std_num_cswch_s",
+            "read_write_physical.process": "read_write_physical_process",
+        }
+    )
+    return df_api
 
 if __name__ == "__main__":
 

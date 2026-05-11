@@ -1,7 +1,8 @@
 import os
 import json
 import joblib
-from fastapi import FastAPI, HTTPException
+import time
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from preprocesamiento import preprocesamiento_inferencia
 from inferencia import modelo_deteccion_anomalias
@@ -9,6 +10,7 @@ import pandas as pd
 from typing import List
 from threading import Lock
 from datetime import datetime, timezone
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 app = FastAPI(
     title="API de Inferencia para Detección de Anomalías en sistemas IIoT",
@@ -23,6 +25,69 @@ metadata_path = os.getenv("MODEL_METADATA_PATH", "/app/modelos/current_model_met
 modelos_dir = os.path.dirname(modelo_path) or "."
 selection_history_path = os.getenv("MODEL_SELECTION_HISTORY_PATH", os.path.join(modelos_dir, "model_selection_history.jsonl"))
 modelo_lock = Lock()
+
+HTTP_REQUESTS_TOTAL = Counter(
+    "api_http_requests_total",
+    "Numero total de peticiones HTTP recibidas por la API",
+    ["method", "endpoint", "http_status"],
+)
+HTTP_REQUEST_DURATION_SECONDS = Histogram(
+    "api_http_request_duration_seconds",
+    "Tiempo de respuesta de las peticiones HTTP en segundos",
+    ["method", "endpoint"],
+)
+PREDICTIONS_TOTAL = Counter(
+    "api_predictions_total",
+    "Numero total de predicciones generadas por la API",
+)
+PREDICTIONS_BY_CLASS_TOTAL = Counter(
+    "api_predictions_by_class_total",
+    "Numero total de predicciones generadas por clase",
+    ["predicted_class"],
+)
+ACTIVE_MODEL_INFO = Gauge(
+    "api_active_model_info",
+    "Informacion del modelo activo. El valor 1 indica el modelo cargado actualmente",
+    ["model_version"],
+)
+MODEL_METRIC = Gauge(
+    "api_model_metric",
+    "Metricas de validacion del modelo activo",
+    ["model_version", "metric"],
+)
+
+
+def actualizar_metrica_modelo_activo():
+    MODEL_METRIC.clear()
+    metadata = cargar_metadata_modelo()
+    model_version = obtener_version_modelo_activo(metadata)
+    versiones_modelos = {
+        modelo_disponible["version"]
+        for modelo_disponible in listar_modelos_disponibles()
+    }
+    versiones_modelos.add(model_version)
+
+    for version in versiones_modelos:
+        ACTIVE_MODEL_INFO.labels(model_version=version).set(1 if version == model_version else 0)
+
+    metricas = cargar_metricas_modelo_activo()
+    metrics = metricas["metrics"]
+    classification_report = metrics.get("classification_report", {})
+    metricas_resumen = {
+        "accuracy": metrics.get("accuracy"),
+        "f1_macro": metrics.get("f1_macro"),
+        "f1_weighted": metrics.get("f1_weighted"),
+        "precision_macro": classification_report.get("macro avg", {}).get("precision"),
+        "recall_macro": classification_report.get("macro avg", {}).get("recall"),
+    }
+
+    for nombre_metrica, valor in metricas_resumen.items():
+        if valor is not None:
+            MODEL_METRIC.labels(model_version=model_version, metric=nombre_metrica).set(float(valor))
+
+
+def es_endpoint_interno(endpoint):
+    return endpoint in {"/metrics", "/health"}
 
 def cargar_metadata_modelo():
     if os.path.isfile(metadata_path):
@@ -58,6 +123,24 @@ def cargar_json_si_existe(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
+
+
+def obtener_version_modelo_activo(metadata):
+    return metadata.get("model_version", os.path.basename(modelo_path).replace(".joblib", ""))
+
+
+def cargar_metricas_modelo_activo():
+    metadata = cargar_metadata_modelo()
+    model_version = obtener_version_modelo_activo(metadata)
+    metrics_path = ruta_metricas_version(model_version)
+    metrics = cargar_json_si_existe(metrics_path) or metadata.get("metrics", {})
+
+    return {
+        "model_version": model_version,
+        "metrics_file": metrics_path if os.path.isfile(metrics_path) else None,
+        "metrics_available": bool(metrics),
+        "metrics": metrics,
+    }
 
 
 def cargar_label_encoder_modelo(metadata_path_activo=None, modelo_path_activo=None):
@@ -153,6 +236,7 @@ if not os.path.isfile(artefactos_path):
 
 modelo = modelo_deteccion_anomalias(modelo_path=modelo_path)
 label_encoder = cargar_label_encoder_modelo()
+actualizar_metrica_modelo_activo()
 
 
 class SeleccionModelo(BaseModel):
@@ -355,6 +439,35 @@ class InputParaElModelo(BaseModel):
     is_privileged: int = Field(..., json_schema_extra={"example": 0})
 
 
+@app.middleware("http")
+async def registrar_metricas_http(request: Request, call_next):
+    inicio = time.perf_counter()
+    endpoint = request.url.path
+    http_status = 500
+    response = None
+
+    try:
+        response = await call_next(request)
+        http_status = response.status_code
+    finally:
+        route = request.scope.get("route")
+        if route is not None and getattr(route, "path", None):
+            endpoint = route.path
+
+        if not es_endpoint_interno(endpoint):
+            HTTP_REQUESTS_TOTAL.labels(
+                method=request.method,
+                endpoint=endpoint,
+                http_status=str(http_status),
+            ).inc()
+            HTTP_REQUEST_DURATION_SECONDS.labels(
+                method=request.method,
+                endpoint=endpoint,
+            ).observe(time.perf_counter() - inicio)
+
+    return response
+
+
 @app.get("/health")
 def health():
     return {
@@ -372,6 +485,33 @@ def model_info():
     metadata["model_path"] = modelo_path
     metadata["artefactos_path"] = artefactos_path
     return metadata
+
+
+@app.get("/model/metrics")
+def model_metrics():
+    metricas = cargar_metricas_modelo_activo()
+    metrics = metricas["metrics"]
+    classification_report = metrics.get("classification_report", {})
+
+    return {
+        "model_version": metricas["model_version"],
+        "metrics_file": metricas["metrics_file"],
+        "metrics_available": metricas["metrics_available"],
+        "summary": {
+            "accuracy": metrics.get("accuracy"),
+            "precision_macro": classification_report.get("macro avg", {}).get("precision"),
+            "recall_macro": classification_report.get("macro avg", {}).get("recall"),
+            "f1_macro": metrics.get("f1_macro"),
+            "f1_weighted": metrics.get("f1_weighted"),
+            "auc": metrics.get("auc"),
+        },
+        "classification_report": classification_report,
+    }
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/models")
@@ -455,6 +595,7 @@ def select_model(selection: SeleccionModelo):
         modelo_path = nuevo_modelo_path
         metadata_path = nuevo_metadata_path
         label_encoder = nuevo_label_encoder
+        actualizar_metrica_modelo_activo()
 
     metadata = cargar_metadata_modelo()
     registro = registrar_cambio_modelo(
@@ -497,6 +638,9 @@ def predict(input_data: List[InputParaElModelo]):
 
         prediccion = modelo_activo.predecir(X_preprocesado)
         prediccion_decodificada = decodificar_predicciones(prediccion, label_encoder_activo)
+        PREDICTIONS_TOTAL.inc(len(prediccion_decodificada))
+        for clase_predicha in prediccion_decodificada:
+            PREDICTIONS_BY_CLASS_TOTAL.labels(predicted_class=str(clase_predicha)).inc()
         print(prediccion)
 
         return {
