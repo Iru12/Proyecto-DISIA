@@ -26,6 +26,7 @@ services:
     environment:
       - MODELO_PATH=/app/modelos/RF_model.joblib
       - ARTEFACTOS_PATH=/app/datos/preprocesados/artefactos_inferencia.joblib
+      - DRIFT_REFERENCE_PATH=/app/datos/preprocesados/drift_reference.json
       - MODEL_METADATA_PATH=/app/modelos/current_model_metadata.json
       - MODEL_SELECTION_HISTORY_PATH=/app/modelos/model_selection_history.jsonl
     healthcheck:

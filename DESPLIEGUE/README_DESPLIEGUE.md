@@ -111,9 +111,42 @@ api_predictions_total
 api_predictions_by_class_total
 api_active_model_info
 api_model_metric
+api_drift_score
+api_drift_alert_active
+api_drift_alerts_total
 ```
 
 Las metricas HTTP de la API excluyen endpoints internos como `/metrics` y `/health` para que Prometheus y el healthcheck no inflen el trafico de inferencia.
+
+## Deteccion de deriva de datos
+
+La explicacion completa de la estrategia, sus limitaciones y la demo esta en:
+
+```text
+README_DERIVA.md
+```
+
+Durante el preprocesamiento se genera:
+
+```text
+data_output/drift_reference.json
+```
+
+Esta referencia aprende un perfil no supervisado del trafico normal de validacion (`class3 = normal`) sobre las 34 variables finales del modelo. En inferencia, cada peticion se compara contra ese perfil y la API mantiene una ventana deslizante para detectar si las muestras recientes se salen de la normalidad.
+
+Estado de deriva:
+
+```text
+http://localhost:8000/drift/status
+```
+
+Reiniciar la ventana de deriva para una demo:
+
+```text
+POST http://localhost:8000/admin/drift/reset
+```
+
+La respuesta de `/predict` incluye un bloque `drift` con `alert_active`, `last_sample_score` y `rolling_drift_score`.
 
 ## Levantar monitorizacion con Prometheus
 
@@ -282,6 +315,14 @@ Para usar el ejemplo fijo en lugar del split de test:
 ```powershell
 python scripts/simulate_traffic.py --source example --requests 20 --delay 1
 ```
+
+Para simular un entorno anomalo y activar la deteccion de deriva:
+
+```powershell
+python scripts/simulate_traffic.py --mode anomalous --source anomalous --requests 150 --delay 0.2
+```
+
+El modo anomalous conserva el contrato JSON de la API, pero infla varias metricas numericas para generar muestras fuera del perfil normal aprendido.
 
 ## Cambiar modelo activo reiniciando API
 

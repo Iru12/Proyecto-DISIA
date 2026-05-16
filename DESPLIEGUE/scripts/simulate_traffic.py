@@ -16,6 +16,7 @@ MODE_CONFIG = {
     "normal": {"requests": 1000, "delay": 1.0, "jitter": 0.2},
     "burst": {"requests": 1000, "delay": 0.1, "jitter": 0.05},
     "slow": {"requests": 1000, "delay": 3.0, "jitter": 0.5},
+    "anomalous": {"requests": 150, "delay": 0.2, "jitter": 0.05},
 }
 
 STRING_FIELDS = {"Date", "Scr_IP", "Des_IP", "Protocol", "Service"}
@@ -51,6 +52,37 @@ INT_FIELDS = {
     "Process_activity",
     "read_write_physical_process",
     "is_privileged",
+}
+
+ANOMALOUS_NUMERIC_FIELDS = {
+    "Duration",
+    "missed_bytes",
+    "total_bytes",
+    "total_packet",
+    "paket_rate",
+    "byte_rate",
+    "Avg_user_time",
+    "Std_user_time",
+    "Avg_nice_time",
+    "Std_nice_time",
+    "Avg_system_time",
+    "Std_system_time",
+    "Avg_iowait_time",
+    "Std_iowait_time",
+    "Avg_tps",
+    "Std_tps",
+    "Avg_rtps",
+    "Std_rtps",
+    "Avg_wtps",
+    "Std_wtps",
+    "Avg_ldavg_1",
+    "Std_ldavg_1",
+    "Avg_kbmemused",
+    "Std_kbmemused",
+    "Avg_num_Proc_s",
+    "Avg_num_cswch_s",
+    "std_num_cswch_s",
+    "OSSEC_alert_level",
 }
 
 
@@ -141,9 +173,26 @@ def load_test_rows(path, reference_payload):
     return valid_rows
 
 
-def build_payload(source, example_payload, test_rows):
+def perturb_anomalous_row(row, factor):
+    anomalous_row = dict(row)
+
+    for field in ANOMALOUS_NUMERIC_FIELDS:
+        value = anomalous_row.get(field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            new_value = value * factor
+            anomalous_row[field] = int(round(new_value)) if field in INT_FIELDS else float(new_value)
+
+    anomalous_row["anomaly_alert"] = True
+    anomalous_row["OSSEC_alert"] = 1
+    anomalous_row["OSSEC_alert_level"] = max(int(anomalous_row.get("OSSEC_alert_level") or 0), 8)
+    return anomalous_row
+
+
+def build_payload(source, example_payload, test_rows, anomaly_factor):
     if source == "example":
         return example_payload
+    if source == "anomalous":
+        return [perturb_anomalous_row(random.choice(test_rows), anomaly_factor)]
 
     return [random.choice(test_rows)]
 
@@ -178,12 +227,13 @@ def parse_args():
     )
     parser.add_argument("--url", default=DEFAULT_URL, help=f"URL del endpoint /predict. Por defecto: {DEFAULT_URL}")
     parser.add_argument("--payload", default=str(DEFAULT_PAYLOAD), help="Ruta al JSON usado como cuerpo de la peticion")
-    parser.add_argument("--source", choices=["test", "example"], default="test", help="Origen de los datos enviados")
+    parser.add_argument("--source", choices=["test", "example", "anomalous"], default="test", help="Origen de los datos enviados")
     parser.add_argument("--test-data", default=str(DEFAULT_TEST_DATA), help="CSV de test crudo compatible con la API")
     parser.add_argument("--mode", choices=MODE_CONFIG.keys(), default="normal", help="Perfil de trafico preconfigurado")
     parser.add_argument("--requests", type=int, default=None, help="Numero de peticiones. Sobrescribe el modo")
     parser.add_argument("--delay", type=float, default=None, help="Espera base entre peticiones en segundos. Sobrescribe el modo")
     parser.add_argument("--jitter", type=float, default=None, help="Variacion aleatoria adicional en segundos")
+    parser.add_argument("--anomaly-factor", type=float, default=8.0, help="Factor usado para inflar campos numericos en --source anomalous")
     parser.add_argument("--timeout", type=float, default=10.0, help="Timeout por peticion en segundos")
     parser.add_argument("--show-response", action="store_true", help="Muestra el cuerpo de cada respuesta")
     return parser.parse_args()
@@ -196,7 +246,7 @@ def main():
     delay = args.delay if args.delay is not None else config["delay"]
     jitter = args.jitter if args.jitter is not None else config["jitter"]
     example_payload = load_payload(args.payload)
-    test_rows = load_test_rows(args.test_data, example_payload) if args.source == "test" else []
+    test_rows = load_test_rows(args.test_data, example_payload) if args.source in {"test", "anomalous"} else []
 
     successes = 0
     failures = 0
@@ -207,7 +257,7 @@ def main():
 
     for index in range(1, total_requests + 1):
         try:
-            payload = build_payload(args.source, example_payload, test_rows)
+            payload = build_payload(args.source, example_payload, test_rows, args.anomaly_factor)
             status, body, latency = post_json(args.url, payload, args.timeout)
             successes += 1
             latencies.append(latency)

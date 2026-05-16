@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from preprocesamiento import preprocesamiento_inferencia
 from inferencia import modelo_deteccion_anomalias
+from drift import DriftMonitor
 import pandas as pd
 from typing import List
 from threading import Lock
@@ -22,9 +23,11 @@ app = FastAPI(
 modelo_path = os.getenv("MODELO_PATH", "modelos/RF_model.joblib")
 artefactos_path = os.getenv("ARTEFACTOS_PATH", "artefactos/preprocesamiento_artifacts.joblib")
 metadata_path = os.getenv("MODEL_METADATA_PATH", "/app/modelos/current_model_metadata.json")
+drift_reference_path = os.getenv("DRIFT_REFERENCE_PATH", "artefactos/drift_reference.json")
 modelos_dir = os.path.dirname(modelo_path) or "."
 selection_history_path = os.getenv("MODEL_SELECTION_HISTORY_PATH", os.path.join(modelos_dir, "model_selection_history.jsonl"))
 modelo_lock = Lock()
+drift_alert_previously_active = False
 
 HTTP_REQUESTS_TOTAL = Counter(
     "api_http_requests_total",
@@ -55,6 +58,26 @@ MODEL_METRIC = Gauge(
     "Metricas de validacion del modelo activo",
     ["model_version", "metric"],
 )
+DRIFT_SCORE = Gauge(
+    "api_drift_score",
+    "Puntuacion de deriva de datos calculada sobre las peticiones de inferencia",
+    ["score_type"],
+)
+DRIFT_ALERT_ACTIVE = Gauge(
+    "api_drift_alert_active",
+    "Indica si la alerta de deriva de datos esta activa",
+)
+DRIFT_WINDOW_OBSERVATIONS = Gauge(
+    "api_drift_window_observations",
+    "Numero de observaciones disponibles en la ventana de deriva",
+)
+DRIFT_ALERTS_TOTAL = Counter(
+    "api_drift_alerts_total",
+    "Numero total de activaciones de alerta de deriva de datos",
+)
+
+
+drift_monitor = DriftMonitor(drift_reference_path)
 
 
 def actualizar_metrica_modelo_activo():
@@ -84,6 +107,29 @@ def actualizar_metrica_modelo_activo():
     for nombre_metrica, valor in metricas_resumen.items():
         if valor is not None:
             MODEL_METRIC.labels(model_version=model_version, metric=nombre_metrica).set(float(valor))
+
+
+def actualizar_metricas_deriva(status):
+    global drift_alert_previously_active
+
+    if not status.get("enabled"):
+        DRIFT_SCORE.labels(score_type="last_sample").set(0)
+        DRIFT_SCORE.labels(score_type="rolling_window").set(0)
+        DRIFT_ALERT_ACTIVE.set(0)
+        DRIFT_WINDOW_OBSERVATIONS.set(0)
+        drift_alert_previously_active = False
+        return
+
+    DRIFT_SCORE.labels(score_type="last_sample").set(float(status.get("last_sample_score", 0)))
+    DRIFT_SCORE.labels(score_type="rolling_window").set(float(status.get("rolling_drift_score", 0)))
+    DRIFT_WINDOW_OBSERVATIONS.set(float(status.get("window_observations", 0)))
+
+    alert_active = bool(status.get("alert_active", False))
+    DRIFT_ALERT_ACTIVE.set(1 if alert_active else 0)
+    if alert_active and not drift_alert_previously_active:
+        DRIFT_ALERTS_TOTAL.inc()
+
+    drift_alert_previously_active = alert_active
 
 
 def es_endpoint_interno(endpoint):
@@ -237,6 +283,7 @@ if not os.path.isfile(artefactos_path):
 modelo = modelo_deteccion_anomalias(modelo_path=modelo_path)
 label_encoder = cargar_label_encoder_modelo()
 actualizar_metrica_modelo_activo()
+actualizar_metricas_deriva(drift_monitor.status())
 
 
 class SeleccionModelo(BaseModel):
@@ -474,9 +521,23 @@ def health():
         "status": "ok",
         "model_loaded": modelo.modelo is not None,
         "label_encoder_loaded": label_encoder is not None,
+        "drift_monitor_enabled": drift_monitor.status().get("enabled", False),
         "model_path": modelo_path,
         "artefactos_path": artefactos_path,
+        "drift_reference_path": drift_reference_path,
     }
+
+
+@app.get("/drift/status")
+def drift_status():
+    return drift_monitor.status()
+
+
+@app.post("/admin/drift/reset")
+def reset_drift_monitor():
+    status = drift_monitor.reset()
+    actualizar_metricas_deriva(status)
+    return status
 
 
 @app.get("/model-info")
@@ -630,6 +691,8 @@ def predict(input_data: List[InputParaElModelo]):
 
         # Preprocesar los datos de entrada
         X_preprocesado= preprocesamiento_inferencia(df_input, artefactos_path=artefactos_path)
+        drift_status_actual = drift_monitor.observe(X_preprocesado)
+        actualizar_metricas_deriva(drift_status_actual)
 
         # Realizar la predicción
         with modelo_lock:
@@ -646,6 +709,12 @@ def predict(input_data: List[InputParaElModelo]):
         return {
             "prediccion": prediccion_decodificada,
             "prediccion_codificada": prediccion.tolist(),
+            "drift": {
+                "alert_active": drift_status_actual.get("alert_active", False),
+                "last_sample_score": drift_status_actual.get("last_sample_score", 0),
+                "rolling_drift_score": drift_status_actual.get("rolling_drift_score", 0),
+                "alert_reason": drift_status_actual.get("alert_reason"),
+            },
         }
 
     except Exception as e:

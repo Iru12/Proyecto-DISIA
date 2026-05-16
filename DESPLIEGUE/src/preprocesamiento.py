@@ -10,12 +10,17 @@ import argparse
 import os
 import joblib
 import sys
+from functools import lru_cache
+from drift import build_drift_reference
+
+
+@lru_cache(maxsize=8)
+def cargar_artefactos_inferencia(artefactos_path):
+    return joblib.load(os.path.abspath(artefactos_path))
+
 
 def preprocesamiento_inferencia(X_input, artefactos_path):
-
-    print(artefactos_path)
-    
-    artefactos = joblib.load(artefactos_path)
+    artefactos = cargar_artefactos_inferencia(artefactos_path)
 
     # Cargar cosas
     cols_cat = artefactos["cols_cat"]
@@ -218,6 +223,17 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
         }
 
         joblib.dump(artefactos, f"{output_dir}/artefactos_inferencia.joblib")
+
+        normal_mask = y_val["class3"].astype(str).str.lower() == "normal"
+        referencia_deriva = X_val_final.loc[normal_mask]
+        if referencia_deriva.empty:
+            referencia_deriva = X_val_final
+
+        build_drift_reference(
+            referencia_deriva,
+            f"{output_dir}/drift_reference.json",
+            source="validation_normal_class3",
+        )
 
         print("Preprocesamiento completado exitosamente.")
         return True 
