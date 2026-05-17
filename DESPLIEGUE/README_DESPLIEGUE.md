@@ -62,6 +62,8 @@ models_output/RF_v1_metadata.json
 models_output/RF_v1_metrics.json
 models_output/current_model_metadata.json
 data_output/artefactos_inferencia.joblib
+data_output/drift_reference.json
+data_output/X_test_api.csv
 ```
 
 `RF_model.joblib` es el alias estable que usa la API por defecto. Los archivos `RF_v*.joblib` permiten conservar versiones historicas.
@@ -114,6 +116,8 @@ api_model_metric
 api_drift_score
 api_drift_alert_active
 api_drift_alerts_total
+api_alerts_total
+api_alert_active
 ```
 
 Las metricas HTTP de la API excluyen endpoints internos como `/metrics` y `/health` para que Prometheus y el healthcheck no inflen el trafico de inferencia.
@@ -148,6 +152,28 @@ POST http://localhost:8000/admin/drift/reset
 
 La respuesta de `/predict` incluye un bloque `drift` con `alert_active`, `last_sample_score` y `rolling_drift_score`.
 
+## Sistema de alertas
+
+La explicacion completa esta en:
+
+```text
+README_ALERTAS.md
+```
+
+Estado de alertas:
+
+```text
+http://localhost:8000/alerts/status
+```
+
+La API registra alertas en:
+
+```text
+models_output/alerts_history.jsonl
+```
+
+Hay alertas operativas para tasa de errores/latencia y alertas de modelo para `f1_macro` bajo y deriva activa.
+
 ## Levantar monitorizacion con Prometheus
 
 Prometheus recoge automaticamente las metricas de la API desde `/metrics`.
@@ -176,6 +202,10 @@ Consultas utiles para la demo:
 api_http_requests_total
 api_predictions_total
 api_predictions_by_class_total
+api_drift_score
+api_drift_alert_active
+api_alert_active
+api_alerts_total
 process_resident_memory_bytes
 process_cpu_seconds_total
 rate(api_http_requests_total[1m])
@@ -213,10 +243,22 @@ El dashboard incluye:
 
 ```text
 Resumen ejecutivo: estado de la API, modelo activo y predicciones
+Deriva y alertas: score de deriva, alerta activa y estado por tipo de alerta
 Calidad del modelo desplegado
 Trafico de inferencia
 Inferencia y errores
 Recursos del proceso
+```
+
+La seccion `Deriva y alertas` muestra:
+
+```text
+Deriva activa: 0/1 convertido a OK/DERIVA
+Score de deriva: rolling_drift_score actual
+Alertas activas: suma de alertas actualmente encendidas
+Estado por alerta: model_data_drift, operational_http_error_rate, etc.
+Evolucion de deriva: last_sample y rolling_window
+Alertas disparadas: alertas generadas en los ultimos minutos
 ```
 
 Las secciones detalladas aparecen como desplegables para que la primera vista sea limpia.
@@ -287,42 +329,182 @@ docker compose run --rm train
 Con la API levantada:
 
 ```powershell
-python scripts/simulate_traffic.py --mode normal
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --mode normal
 ```
+
+Los parametros mas importantes son:
+
+```text
+--source test       usa filas reales del split de test
+--source example    repite un ejemplo fijo, util para trafico sano y estable
+--source anomalous  altera filas validas para simular datos fuera del perfil normal
+
+--mode normal       ritmo tranquilo de peticiones
+--mode burst        ritmo rapido
+--mode slow         ritmo lento
+--mode anomalous    perfil de demo para trafico anomalo
+```
+
+Importante: `--mode normal` describe el ritmo de envio, no la clase real del dataset.
+Para una demo limpia de recuperacion o ausencia de deriva, usar `--source example`.
 
 Modos disponibles:
 
 ```powershell
-python scripts/simulate_traffic.py --mode normal
-python scripts/simulate_traffic.py --mode burst
-python scripts/simulate_traffic.py --mode slow
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --mode normal
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --mode burst
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --mode slow
 ```
 
 Tambien se puede ajustar manualmente:
 
 ```powershell
-python scripts/simulate_traffic.py --requests 100 --delay 0.5
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --requests 100 --delay 0.5
 ```
 
 Si la API esta en otra URL:
 
 ```powershell
-python scripts/simulate_traffic.py --url http://localhost:8000/predict --requests 50 --delay 1
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --url http://localhost:8000/predict --requests 50 --delay 1
 ```
 
 Para usar el ejemplo fijo en lugar del split de test:
 
 ```powershell
-python scripts/simulate_traffic.py --source example --requests 20 --delay 1
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source example --requests 20 --delay 1
 ```
 
 Para simular un entorno anomalo y activar la deteccion de deriva:
 
 ```powershell
-python scripts/simulate_traffic.py --mode anomalous --source anomalous --requests 150 --delay 0.2
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --mode anomalous --source anomalous --requests 150 --delay 0.2
 ```
 
 El modo anomalous conserva el contrato JSON de la API, pero infla varias metricas numericas para generar muestras fuera del perfil normal aprendido.
+
+## Demo completa de deriva y alertas
+
+La siguiente secuencia permite probar todo lo nuevo del Hito 5 con la pila Docker levantada:
+
+```powershell
+cd C:\Users\usuario\Desktop\MARCELO\MASTER\dsia-hito5\Proyecto-DISIA\DESPLIEGUE
+```
+
+URLs que se deben tener abiertas:
+
+```text
+API:        http://localhost:8000/docs
+Prometheus: http://localhost:9090
+Grafana:    http://localhost:3000
+Dashboard:  Dashboards > DISIA > DISIA - Observabilidad API
+```
+
+### 1. Empezar con estado limpio
+
+```powershell
+Invoke-RestMethod http://localhost:8000/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
+```
+
+### 2. Trafico normal y metricas sin alerta
+
+```powershell
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source example --requests 80 --delay 0.03
+```
+
+Comprobar:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/drift/status
+Invoke-RestMethod http://localhost:8000/alerts/status
+```
+
+Resultado esperado:
+
+```text
+rolling_drift_score por debajo de 0.15
+api_drift_alert_active = 0
+active_alerts vacio
+```
+
+En Grafana, la seccion `Deriva y alertas` debe mostrar `Deriva activa = OK`.
+
+### 3. Trafico anomalo y alerta de deriva
+
+```powershell
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source anomalous --mode anomalous --requests 80 --delay 0.05
+```
+
+Comprobar:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/drift/status
+Invoke-RestMethod http://localhost:8000/alerts/status
+```
+
+Resultado esperado:
+
+```text
+rolling_drift_score por encima de 0.15
+api_drift_alert_active = 1
+model_data_drift activa
+```
+
+En Grafana, `Deriva activa` debe pasar a `DERIVA`.
+
+### 4. Forzar alerta operativa HTTP
+
+Sin resetear la deriva, forzar errores 404:
+
+```powershell
+1..25 | ForEach-Object {
+  try {
+    Invoke-WebRequest -UseBasicParsing "http://localhost:8000/ruta-inexistente" | Out-Null
+  } catch {}
+}
+```
+
+Comprobar:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/alerts/status
+```
+
+Resultado esperado:
+
+```text
+model_data_drift activa
+operational_http_error_rate activa
+Alertas activas = 2 en Grafana
+```
+
+### 5. Recuperacion automatica con trafico sano
+
+Enviar suficientes peticiones sanas para que las ventanas deslizantes se limpien:
+
+```powershell
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source example --requests 160 --delay 0.02
+```
+
+Resultado esperado:
+
+```text
+Deriva activa vuelve a OK
+model_data_drift pasa a off
+operational_http_error_rate pasa a off
+```
+
+Esto ocurre porque tanto la deriva como la tasa de errores HTTP se calculan sobre ventanas recientes. Las alertas se activan cuando la ventana reciente es problematica y se resuelven cuando vuelve a entrar trafico sano.
+
+### 6. Consultas utiles en Prometheus
+
+```text
+api_drift_score
+api_drift_alert_active
+api_alert_active
+api_alerts_total
+api_http_requests_total
+```
 
 ## Cambiar modelo activo reiniciando API
 

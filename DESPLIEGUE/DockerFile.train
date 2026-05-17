@@ -6,6 +6,7 @@ COPY requirements-prod.txt .
 RUN pip install --no-cache-dir -r requirements-prod.txt
 
 COPY src/ingesta_datos.py src/
+COPY src/alerting.py src/
 COPY src/drift.py src/
 COPY src/preprocesamiento.py src/
 COPY src/train.py src/

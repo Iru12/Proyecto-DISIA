@@ -2,11 +2,13 @@ import os
 import json
 import joblib
 import time
+from collections import deque
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from preprocesamiento import preprocesamiento_inferencia
 from inferencia import modelo_deteccion_anomalias
 from drift import DriftMonitor
+from alerting import AlertManager
 import pandas as pd
 from typing import List
 from threading import Lock
@@ -26,8 +28,15 @@ metadata_path = os.getenv("MODEL_METADATA_PATH", "/app/modelos/current_model_met
 drift_reference_path = os.getenv("DRIFT_REFERENCE_PATH", "artefactos/drift_reference.json")
 modelos_dir = os.path.dirname(modelo_path) or "."
 selection_history_path = os.getenv("MODEL_SELECTION_HISTORY_PATH", os.path.join(modelos_dir, "model_selection_history.jsonl"))
+alert_history_path = os.getenv("ALERT_HISTORY_PATH", os.path.join(modelos_dir, "alerts_history.jsonl"))
+operational_window_size = int(os.getenv("ALERT_OPERATIONAL_WINDOW_SIZE", "50"))
+operational_min_window_size = int(os.getenv("ALERT_OPERATIONAL_MIN_WINDOW_SIZE", "10"))
+operational_error_rate_threshold = float(os.getenv("ALERT_ERROR_RATE_THRESHOLD", "0.30"))
+operational_latency_p95_threshold = float(os.getenv("ALERT_LATENCY_P95_THRESHOLD", "3.0"))
+model_f1_macro_min = float(os.getenv("ALERT_MODEL_F1_MACRO_MIN", "0.90"))
 modelo_lock = Lock()
 drift_alert_previously_active = False
+request_window = deque(maxlen=operational_window_size)
 
 HTTP_REQUESTS_TOTAL = Counter(
     "api_http_requests_total",
@@ -75,9 +84,40 @@ DRIFT_ALERTS_TOTAL = Counter(
     "api_drift_alerts_total",
     "Numero total de activaciones de alerta de deriva de datos",
 )
+ALERTS_TOTAL = Counter(
+    "api_alerts_total",
+    "Numero total de alertas generadas por la API",
+    ["category", "severity", "key"],
+)
+ALERT_ACTIVE = Gauge(
+    "api_alert_active",
+    "Indica si una alerta esta activa",
+    ["category", "severity", "key"],
+)
 
 
 drift_monitor = DriftMonitor(drift_reference_path)
+alert_manager = AlertManager.from_env(alert_history_path)
+
+
+def registrar_alerta(key, category, severity, title, detail, metadata=None):
+    event = alert_manager.trigger(
+        key=key,
+        category=category,
+        severity=severity,
+        title=title,
+        detail=detail,
+        metadata=metadata or {},
+    )
+    ALERT_ACTIVE.labels(category=category, severity=severity, key=key).set(1)
+    if event is not None:
+        ALERTS_TOTAL.labels(category=category, severity=severity, key=key).inc()
+    return event
+
+
+def resolver_alerta(key, category, severity):
+    alert_manager.resolve(key)
+    ALERT_ACTIVE.labels(category=category, severity=severity, key=key).set(0)
 
 
 def actualizar_metrica_modelo_activo():
@@ -128,6 +168,23 @@ def actualizar_metricas_deriva(status):
     DRIFT_ALERT_ACTIVE.set(1 if alert_active else 0)
     if alert_active and not drift_alert_previously_active:
         DRIFT_ALERTS_TOTAL.inc()
+
+    if alert_active:
+        registrar_alerta(
+            key="model_data_drift",
+            category="model",
+            severity="warning",
+            title="Deriva de datos activa",
+            detail="La ventana reciente de peticiones se sale del perfil normal aprendido.",
+            metadata={
+                "rolling_drift_score": status.get("rolling_drift_score"),
+                "last_sample_score": status.get("last_sample_score"),
+                "alert_reason": status.get("alert_reason"),
+                "top_features": status.get("top_features", []),
+            },
+        )
+    else:
+        resolver_alerta("model_data_drift", "model", "warning")
 
     drift_alert_previously_active = alert_active
 
@@ -187,6 +244,90 @@ def cargar_metricas_modelo_activo():
         "metrics_available": bool(metrics),
         "metrics": metrics,
     }
+
+
+def percentil(valores, p):
+    if not valores:
+        return 0
+    ordenados = sorted(valores)
+    indice = round((len(ordenados) - 1) * p)
+    return float(ordenados[indice])
+
+
+def evaluar_alertas_operativas(endpoint, http_status, duracion_segundos):
+    request_window.append(
+        {
+            "endpoint": endpoint,
+            "http_status": int(http_status),
+            "duration": float(duracion_segundos),
+        }
+    )
+
+    if len(request_window) < operational_min_window_size:
+        return
+
+    total = len(request_window)
+    errores = sum(1 for item in request_window if item["http_status"] >= 400)
+    error_rate = errores / total
+    p95_latency = percentil([item["duration"] for item in request_window], 0.95)
+
+    if error_rate >= operational_error_rate_threshold:
+        registrar_alerta(
+            key="operational_http_error_rate",
+            category="operational",
+            severity="warning",
+            title="Tasa elevada de errores HTTP",
+            detail=f"La tasa de errores HTTP en la ventana reciente es {error_rate:.2%}.",
+            metadata={
+                "window_size": total,
+                "errors": errores,
+                "error_rate": error_rate,
+                "threshold": operational_error_rate_threshold,
+            },
+        )
+    else:
+        resolver_alerta("operational_http_error_rate", "operational", "warning")
+
+    if p95_latency >= operational_latency_p95_threshold:
+        registrar_alerta(
+            key="operational_high_latency",
+            category="operational",
+            severity="warning",
+            title="Latencia elevada en la API",
+            detail=f"La latencia p95 en la ventana reciente es {p95_latency:.3f}s.",
+            metadata={
+                "window_size": total,
+                "p95_latency_seconds": p95_latency,
+                "threshold_seconds": operational_latency_p95_threshold,
+            },
+        )
+    else:
+        resolver_alerta("operational_high_latency", "operational", "warning")
+
+
+def evaluar_alerta_metrica_modelo():
+    metricas = cargar_metricas_modelo_activo()
+    metrics = metricas["metrics"]
+    f1_macro = metrics.get("f1_macro")
+
+    if f1_macro is None:
+        return
+
+    if float(f1_macro) < model_f1_macro_min:
+        registrar_alerta(
+            key="model_f1_macro_low",
+            category="model",
+            severity="critical",
+            title="F1 macro del modelo por debajo del umbral",
+            detail=f"El modelo activo tiene f1_macro={float(f1_macro):.4f}.",
+            metadata={
+                "model_version": metricas["model_version"],
+                "f1_macro": float(f1_macro),
+                "threshold": model_f1_macro_min,
+            },
+        )
+    else:
+        resolver_alerta("model_f1_macro_low", "model", "critical")
 
 
 def cargar_label_encoder_modelo(metadata_path_activo=None, modelo_path_activo=None):
@@ -283,6 +424,7 @@ if not os.path.isfile(artefactos_path):
 modelo = modelo_deteccion_anomalias(modelo_path=modelo_path)
 label_encoder = cargar_label_encoder_modelo()
 actualizar_metrica_modelo_activo()
+evaluar_alerta_metrica_modelo()
 actualizar_metricas_deriva(drift_monitor.status())
 
 
@@ -291,6 +433,16 @@ class SeleccionModelo(BaseModel):
         ...,
         description="Version del modelo que se quiere activar",
         json_schema_extra={"example": "RF_v1"}
+    )
+
+
+class AlertaPrueba(BaseModel):
+    category: str = Field("operational", json_schema_extra={"example": "operational"})
+    severity: str = Field("warning", json_schema_extra={"example": "warning"})
+    title: str = Field("Alerta de prueba", json_schema_extra={"example": "Alerta de prueba"})
+    detail: str = Field(
+        "Validacion manual del canal de alertas",
+        json_schema_extra={"example": "Validacion manual del canal de alertas"}
     )
 
 
@@ -502,6 +654,7 @@ async def registrar_metricas_http(request: Request, call_next):
             endpoint = route.path
 
         if not es_endpoint_interno(endpoint):
+            duracion = time.perf_counter() - inicio
             HTTP_REQUESTS_TOTAL.labels(
                 method=request.method,
                 endpoint=endpoint,
@@ -510,7 +663,8 @@ async def registrar_metricas_http(request: Request, call_next):
             HTTP_REQUEST_DURATION_SECONDS.labels(
                 method=request.method,
                 endpoint=endpoint,
-            ).observe(time.perf_counter() - inicio)
+            ).observe(duracion)
+            evaluar_alertas_operativas(endpoint, http_status, duracion)
 
     return response
 
@@ -525,6 +679,7 @@ def health():
         "model_path": modelo_path,
         "artefactos_path": artefactos_path,
         "drift_reference_path": drift_reference_path,
+        "alert_channels": alert_manager.channels(),
     }
 
 
@@ -538,6 +693,45 @@ def reset_drift_monitor():
     status = drift_monitor.reset()
     actualizar_metricas_deriva(status)
     return status
+
+
+@app.get("/alerts/status")
+def alerts_status(limit: int = 20):
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit debe estar entre 1 y 200")
+
+    return alert_manager.status(limit=limit)
+
+
+@app.post("/admin/alerts/reset")
+def reset_alerts_runtime():
+    alert_manager.reset_runtime()
+    for key, category, severity in [
+        ("operational_http_error_rate", "operational", "warning"),
+        ("operational_high_latency", "operational", "warning"),
+        ("model_f1_macro_low", "model", "critical"),
+        ("model_data_drift", "model", "warning"),
+    ]:
+        ALERT_ACTIVE.labels(category=category, severity=severity, key=key).set(0)
+
+    return alert_manager.status()
+
+
+@app.post("/admin/alerts/test")
+def test_alert(alerta: AlertaPrueba):
+    event = registrar_alerta(
+        key="manual_test_alert",
+        category=alerta.category,
+        severity=alerta.severity,
+        title=alerta.title,
+        detail=alerta.detail,
+        metadata={"source": "admin_test_endpoint"},
+    )
+    return {
+        "status": "sent" if event is not None else "cooldown_active",
+        "event": event,
+        "alerts": alert_manager.status(limit=5),
+    }
 
 
 @app.get("/model-info")
@@ -657,6 +851,7 @@ def select_model(selection: SeleccionModelo):
         metadata_path = nuevo_metadata_path
         label_encoder = nuevo_label_encoder
         actualizar_metrica_modelo_activo()
+        evaluar_alerta_metrica_modelo()
 
     metadata = cargar_metadata_modelo()
     registro = registrar_cambio_modelo(

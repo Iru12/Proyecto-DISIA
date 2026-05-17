@@ -82,8 +82,22 @@ La API carga esta referencia al arrancar y mantiene una ventana deslizante de pe
 3. El modelo genera la prediccion.
 4. El monitor de deriva calcula cuantas variables quedan fuera del perfil normal.
 5. Se actualiza la ventana de observaciones recientes.
-6. Si la ventana supera el umbral de deriva, se activa una alerta interna.
+6. Si la ventana supera el umbral de deriva, se activa la alerta `model_data_drift`.
 ```
+
+El modelo no se reentrena durante estas peticiones. El flujo de despliegue queda separado:
+
+```text
+docker compose run --rm train
+```
+
+entrena y guarda artefactos, mientras que:
+
+```text
+docker compose up inferencia prometheus grafana
+```
+
+solo levanta la API, carga el modelo entrenado y observa las peticiones.
 
 ## Scores de deriva
 
@@ -175,6 +189,31 @@ api_drift_window_observations
 
 Estas metricas permiten conectar la deriva con Prometheus, Grafana y, mas adelante, reglas de alerta.
 
+## Simulador de trafico
+
+El script:
+
+```text
+DESPLIEGUE/scripts/simulate_traffic.py
+```
+
+manda peticiones a `POST /predict` para simular trafico online. No entrena el modelo ni modifica los artefactos: solo alimenta inferencia, metricas, deriva y alertas.
+
+Los parametros importantes son:
+
+```text
+--source test       usa filas reales del split de test
+--source example    repite un ejemplo fijo compatible con la API
+--source anomalous  altera filas validas para simular datos fuera del perfil normal
+
+--mode normal       ritmo tranquilo de peticiones
+--mode burst        ritmo rapido
+--mode slow         ritmo lento
+--mode anomalous    perfil de demo para trafico anomalo
+```
+
+Importante: `--mode normal` no significa necesariamente "clase normal del dataset"; significa ritmo normal de envio. Para probar recuperacion limpia de deriva conviene usar `--source example`, porque repite un ejemplo estable y sano.
+
 ## Demo local
 
 Levantar la API:
@@ -199,16 +238,113 @@ Invoke-RestMethod http://127.0.0.1:8000/admin/drift/reset -Method Post
 Simular trafico normal:
 
 ```powershell
-python scripts/simulate_traffic.py --source test --mode normal --requests 40 --delay 0
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source example --requests 80 --delay 0.03
 ```
 
 Simular trafico anomalo:
 
 ```powershell
-python scripts/simulate_traffic.py --mode anomalous --source anomalous --requests 150 --delay 0.2
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --mode anomalous --source anomalous --requests 80 --delay 0.05
 ```
 
 El modo `anomalous` conserva el contrato JSON de la API, pero infla varias metricas numericas para simular un entorno fuera del perfil normal.
+
+### Secuencia recomendada para la demo
+
+Desde `DESPLIEGUE`:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
+```
+
+1. Enviar trafico sano:
+
+```powershell
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source example --requests 80 --delay 0.03
+```
+
+Comprobar:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/drift/status
+```
+
+Esperado:
+
+```text
+alert_active = false
+rolling_drift_score < 0.15
+```
+
+2. Enviar trafico anomalo:
+
+```powershell
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source anomalous --mode anomalous --requests 80 --delay 0.05
+```
+
+Comprobar:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/drift/status
+Invoke-RestMethod http://localhost:8000/alerts/status
+```
+
+Esperado:
+
+```text
+alert_active = true
+rolling_drift_score > 0.15
+model_data_drift activa
+```
+
+3. Recuperar con trafico sano:
+
+```powershell
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source example --requests 160 --delay 0.02
+```
+
+Esperado:
+
+```text
+alert_active vuelve a false
+model_data_drift pasa a off
+```
+
+Esto pasa porque la deriva usa una ventana deslizante. Cuando entran suficientes peticiones sanas, las muestras anomalas salen de la ventana y el `rolling_drift_score` cae por debajo del umbral.
+
+## Visualizacion en Grafana
+
+Con la pila completa:
+
+```powershell
+docker compose up inferencia prometheus grafana
+```
+
+Grafana queda disponible en:
+
+```text
+http://localhost:3000
+```
+
+Dashboard:
+
+```text
+Dashboards > DISIA > DISIA - Observabilidad API
+```
+
+La seccion `Deriva y alertas` muestra:
+
+```text
+Deriva activa
+Score de deriva
+Alertas activas
+Estado por alerta
+Evolucion de deriva
+Alertas disparadas
+```
+
+Los endpoints `/drift/status` y `/alerts/status` siguen siendo utiles para ver el detalle tecnico completo, como `top_features`, `alert_reason` e historico.
 
 ## Validacion realizada
 
@@ -237,8 +373,8 @@ Limitaciones principales:
 
 - El dataset no garantiza orden temporal real.
 - El perfil normal se aprende desde validacion, no desde trafico real de una planta industrial.
-- Los umbrales son heurísticos y se han fijado para una demo comprensible.
-- La alerta todavia es interna; falta conectarla a correo, Telegram, Teams u otro canal externo.
+- Los umbrales son heuristicos y se han fijado para una demo comprensible.
+- El envio externo de alertas requiere configurar `ALERT_WEBHOOK_URL` o Telegram; si no se configura, quedan registradas localmente y visibles en API, Prometheus y Grafana.
 
 ## Como defenderlo
 
@@ -264,4 +400,4 @@ Monitorizacion en Prometheus/Grafana
 Feedback loop y reentrenamiento
 ```
 
-Lo que queda pendiente para completar el Hito 5 es conectar estas alertas internas con un canal externo y formalizar el feedback loop/reentrenamiento.
+Lo que queda pendiente como mejora futura es formalizar el feedback loop/reentrenamiento automatico. Las alertas ya quedan auditadas localmente y pueden enviarse a canales externos si se configuran las variables correspondientes.
