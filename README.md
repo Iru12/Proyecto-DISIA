@@ -27,6 +27,7 @@ Prometheus para metricas
 Grafana para dashboard visual
 Deteccion de deriva de datos
 Sistema de alertas
+Notificaciones externas por Telegram
 Simulador de trafico normal y anomalo
 ```
 

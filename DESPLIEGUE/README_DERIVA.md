@@ -374,7 +374,7 @@ Limitaciones principales:
 - El dataset no garantiza orden temporal real.
 - El perfil normal se aprende desde validacion, no desde trafico real de una planta industrial.
 - Los umbrales son heuristicos y se han fijado para una demo comprensible.
-- El envio externo de alertas requiere configurar `ALERT_WEBHOOK_URL` o Telegram; si no se configura, quedan registradas localmente y visibles en API, Prometheus y Grafana.
+- El envio externo de alertas requiere configurar Telegram mediante `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`; si no se configura, quedan registradas localmente y visibles en API, Prometheus y Grafana.
 
 ## Como defenderlo
 

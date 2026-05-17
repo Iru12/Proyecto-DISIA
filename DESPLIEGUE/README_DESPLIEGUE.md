@@ -174,6 +174,21 @@ models_output/alerts_history.jsonl
 
 Hay alertas operativas para tasa de errores/latencia y alertas de modelo para `f1_macro` bajo y deriva activa.
 
+El canal externo elegido para las notificaciones es Telegram. Las credenciales se configuran con:
+
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+```
+
+La plantilla esta en:
+
+```text
+.env.example
+```
+
+El archivo real `.env` no se sube a Git.
+
 ## Levantar monitorizacion con Prometheus
 
 Prometheus recoge automaticamente las metricas de la API desde `/metrics`.

@@ -21,15 +21,180 @@ Siempre queda activo un historial local en formato JSONL:
 DESPLIEGUE/models_output/alerts_history.jsonl
 ```
 
-Ademas, se pueden activar canales externos mediante variables de entorno:
+El canal externo elegido para el proyecto es Telegram. Se activa mediante variables de entorno:
 
 ```text
-ALERT_WEBHOOK_URL
 TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID
 ```
 
 Si no se configuran, la alerta no se envia fuera, pero sigue quedando registrada localmente y expuesta por la API.
+
+## Configurar Telegram
+
+1. Abrir Telegram y buscar:
+
+```text
+@BotFather
+```
+
+2. Crear un bot:
+
+```text
+/newbot
+```
+
+BotFather devuelve un token con este formato aproximado:
+
+```text
+123456789:AA...
+```
+
+Ese valor es:
+
+```text
+TELEGRAM_BOT_TOKEN
+```
+
+3. Abrir un chat con el bot creado y enviarle cualquier mensaje, por ejemplo:
+
+```text
+hola
+```
+
+4. Obtener el `chat_id` desde PowerShell:
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN="TOKEN_DEL_BOT"
+$updates = Invoke-RestMethod "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/getUpdates"
+$updates.result | ConvertTo-Json -Depth 10
+```
+
+En la respuesta, buscar:
+
+```text
+message.chat.id
+```
+
+Ese valor es:
+
+```text
+TELEGRAM_CHAT_ID
+```
+
+Tambien se puede extraer directamente con:
+
+```powershell
+$updates.result[-1].message.chat.id
+```
+
+Importante: `TELEGRAM_CHAT_ID` no es el username del bot. No debe ser algo como:
+
+```text
+@mi_bot
+mi_bot
+```
+
+Debe ser el identificador numerico del chat, por ejemplo:
+
+```text
+1098724497
+```
+
+Si `getUpdates` devuelve `result` vacio, normalmente significa que todavia no se ha abierto conversacion con el bot. En ese caso, abrir el bot en Telegram, enviar `/start` o `hola`, y repetir la llamada a `getUpdates`.
+
+5. Crear un archivo `.env` dentro de `DESPLIEGUE` copiando la plantilla:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Contenido esperado:
+
+```text
+TELEGRAM_BOT_TOKEN=TOKEN_DEL_BOT
+TELEGRAM_CHAT_ID=CHAT_ID
+```
+
+El archivo `.env` no se debe subir a Git. Solo se sube `.env.example`.
+
+6. Levantar Docker Compose. Docker carga automaticamente las variables del `.env`:
+
+```powershell
+docker compose up --build inferencia prometheus grafana
+```
+
+7. Confirmar que la API detecta el canal:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/health
+```
+
+En `alert_channels` deberia aparecer:
+
+```text
+local_history
+telegram
+```
+
+Para ejecucion local sin Docker, se pueden definir las variables antes de arrancar:
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN="TOKEN_DEL_BOT"
+$env:TELEGRAM_CHAT_ID="CHAT_ID"
+.\run_api_local.ps1
+```
+
+## Persistencia de la configuracion
+
+La configuracion de Telegram es persistente en la maquina local mientras exista:
+
+```text
+DESPLIEGUE/.env
+```
+
+Ese archivo esta ignorado por Git y no debe subirse al repositorio porque contiene secretos.
+
+Docker Compose lee `.env` al crear o recrear el contenedor. Si se cambia el token o el chat id, hay que recrear el servicio para que la API cargue los nuevos valores:
+
+```powershell
+docker compose up -d --build --force-recreate inferencia
+```
+
+Tambien se puede reiniciar toda la pila:
+
+```powershell
+docker compose down
+docker compose up --build inferencia prometheus grafana
+```
+
+El estado activo de deriva y alertas no es permanente: se puede limpiar con:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
+```
+
+El historico local si queda guardado en:
+
+```text
+DESPLIEGUE/models_output/alerts_history.jsonl
+```
+
+Prometheus y Grafana pueden seguir mostrando puntos antiguos dentro del rango temporal seleccionado, aunque `active_alerts` ya este vacio. Para comprobar el estado actual, mirar:
+
+```text
+GET /alerts/status
+GET /drift/status
+```
+
+Si un token se ha compartido por error, se debe regenerar en BotFather con:
+
+```text
+/revoke
+```
+
+y actualizar despues el `.env`.
 
 ## Estado activo e historico
 
@@ -396,9 +561,9 @@ active_alerts queda vacio o sin esas claves
 
 Esto ocurre porque las alertas se calculan sobre ventanas recientes, no sobre todo el historico desde que arranco la API.
 
-### Demo de alerta manual
+### Demo de Telegram con alerta manual
 
-Sirve para comprobar el canal local o un webhook externo sin provocar deriva ni errores reales:
+Sirve para comprobar el canal local y Telegram sin provocar deriva ni errores reales:
 
 ```powershell
 $body = @{
@@ -411,10 +576,23 @@ $body = @{
 Invoke-RestMethod -Method Post http://localhost:8000/admin/alerts/test -ContentType "application/json" -Body $body
 ```
 
+Si Telegram esta bien configurado, debe llegar un mensaje al chat con:
+
+```text
+[DISIA ALERTA]
+Severidad
+Clave
+Categoria
+Titulo
+Detalle
+Timestamp
+Metadata
+```
+
 ## Como defenderlo en la memoria
 
 La parte de alertas puede explicarse asi:
 
 ```text
-El sistema transforma metricas de observabilidad en eventos accionables. Se implementan alertas operativas sobre tasa de errores y latencia de la API, y alertas de calidad del modelo sobre f1_macro y deriva de datos. Todas las alertas quedan auditadas en un historico JSONL y pueden enviarse a canales externos mediante webhook o Telegram.
+El sistema transforma metricas de observabilidad en eventos accionables. Se implementan alertas operativas sobre tasa de errores y latencia de la API, y alertas de calidad del modelo sobre f1_macro y deriva de datos. Todas las alertas quedan auditadas en un historico JSONL y, si se configuran las credenciales, se envian como notificaciones externas mediante Telegram.
 ```
