@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 DEFAULT_URL = "http://localhost:8000/predict"
-DEFAULT_PAYLOAD = Path(__file__).resolve().parents[1] / "data_output" / "predict_example.json"
+DEFAULT_PAYLOAD = Path(__file__).resolve().parents[1] / "examples" / "predict_example.json"
 DEFAULT_TEST_DATA = Path(__file__).resolve().parents[1] / "data_output" / "X_test_api.csv"
 
 MODE_CONFIG = {

@@ -299,17 +299,19 @@ http://localhost:8000/admin/models/history
 
 ## Probar prediccion
 
-Desde Swagger, copiar el contenido de:
+Para probar con datos reales del split de test, usar el simulador con:
 
-```text
-data_output/predict_example.json
+```powershell
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source test --requests 1 --delay 0 --show-response
 ```
 
-en el endpoint:
+El CSV usado como fuente es:
 
 ```text
-POST /predict
+data_output/X_test_api.csv
 ```
+
+El archivo `examples/predict_example.json` solo se usa como plantilla del contrato JSON esperado por la API.
 
 Respuesta esperada:
 
@@ -344,7 +346,7 @@ docker compose run --rm train
 Con la API levantada:
 
 ```powershell
-..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --mode normal
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source test --mode normal
 ```
 
 Los parametros mas importantes son:
@@ -383,10 +385,10 @@ Si la API esta en otra URL:
 ..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --url http://localhost:8000/predict --requests 50 --delay 1
 ```
 
-Para usar el ejemplo fijo en lugar del split de test:
+Para enviar una unica muestra real del split de test y ver la respuesta:
 
 ```powershell
-..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source example --requests 20 --delay 1
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --source test --requests 1 --delay 0 --show-response
 ```
 
 Para simular un entorno anomalo y activar la deteccion de deriva:

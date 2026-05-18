@@ -82,7 +82,7 @@ La API carga esta referencia al arrancar y mantiene una ventana deslizante de pe
 3. El modelo genera la prediccion.
 4. El monitor de deriva calcula cuantas variables quedan fuera del perfil normal.
 5. Se actualiza la ventana de observaciones recientes.
-6. Si la ventana supera el umbral de deriva, se activa la alerta `model_data_drift`.
+6. Si la ultima muestra o la ventana reciente superan el umbral de deriva, se activa la alerta `model_data_drift`.
 ```
 
 El modelo no se reentrena durante estas peticiones. El flujo de despliegue queda separado:
@@ -132,7 +132,7 @@ min_window_size = 30
 window_size = 100
 ```
 
-La alerta de ventana no se activa hasta tener al menos 30 observaciones. Esto evita disparos demasiado tempranos con pocas muestras.
+La alerta de ventana no se activa hasta tener al menos 30 observaciones. Esto evita disparos demasiado tempranos por acumulacion con pocas muestras. La alerta por muestra individual si puede activarse antes si una peticion aislada queda muy fuera del perfil normal.
 
 ## Endpoints nuevos
 
