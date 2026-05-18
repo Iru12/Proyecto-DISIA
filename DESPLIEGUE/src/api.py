@@ -1,5 +1,7 @@
 import os
 import json
+import subprocess
+import threading
 import joblib
 import time
 from collections import deque
@@ -37,6 +39,13 @@ model_f1_macro_min = float(os.getenv("ALERT_MODEL_F1_MACRO_MIN", "0.90"))
 modelo_lock = Lock()
 drift_alert_previously_active = False
 request_window = deque(maxlen=operational_window_size)
+
+CANTIDAD_MAX_LOGS_REENTRENAMIENTO = 1000
+CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO = 0
+RETRAINING_IN_PROGRESS = False
+ULTIMO_REENTRENAMIENTO_TIMESTAMP = time.time()
+REENTRENAMIENTO_INTERVALO = 3600 # Cada hora
+lock = threading.Lock()
 
 HTTP_REQUESTS_TOTAL = Counter(
     "api_http_requests_total",
@@ -870,9 +879,41 @@ def select_model(selection: SeleccionModelo):
         "note": "Endpoint admin de simulacion. En produccion debe protegerse con autenticacion/autorizacion.",
     }
 
+def retraining():
+
+    global RETRAINING_IN_PROGRESS
+
+    def run():
+
+        global RETRAINING_IN_PROGRESS
+        global CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO
+        global ULTIMO_REENTRENAMIENTO_TIMESTAMP
+
+        try:
+            subprocess.run(["python", "retraining.py"])
+        finally:
+            RETRAINING_IN_PROGRESS = False
+            CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO = 0
+            ULTIMO_REENTRENAMIENTO_TIMESTAMP = time.time()
+
+    with lock:
+        if RETRAINING_IN_PROGRESS:
+            print("Re-entrenamiento ya en progreso. Se ignora esta solicitud.")
+            return
+    
+        RETRAINING_IN_PROGRESS = True
+            
+    threading.Thread(target=run).start()
 
 @app.post("/predict")
 def predict(input_data: List[InputParaElModelo]):
+
+    global CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO
+    global CANTIDAD_MAX_LOGS_REENTRENAMIENTO
+    global RETRAINING_IN_PROGRESS
+    global ULTIMO_REENTRENAMIENTO_TIMESTAMP
+    global REENTRENAMIENTO_INTERVALO
+
     try:
         # Convertir el modelo de entrada a un DataFrame
         df_input = pd.DataFrame([input_data.model_dump() for input_data in input_data])
@@ -901,6 +942,40 @@ def predict(input_data: List[InputParaElModelo]):
             PREDICTIONS_BY_CLASS_TOTAL.labels(predicted_class=str(clase_predicha)).inc()
         print(prediccion)
 
+        # Guardamos la instancia para re-entrenamiento futuro en caso de deriva, junto con su predicción y el resultado de la monitorización de deriva
+        predicciones_log_path = os.getenv("PREDICTIONS_LOG_PATH", "/app/datos/preprocesados/predicciones_inferencia.log")
+
+        with open(predicciones_log_path, "a", encoding="utf-8") as f:
+            registro_drift = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input": X_preprocesado.to_dict(orient="records"),
+                "prediction": prediccion_decodificada,
+                "drift_status": drift_status_actual,
+            }
+            f.write(json.dumps(registro_drift) + "\n")
+        
+        with lock:
+            CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO += 1
+        
+        # Re-entrenamos el modelo según ciertas restricciones
+        if RETRAINING_IN_PROGRESS:
+            print("Re-entrenamiento ya en progreso. Se evaluará la necesidad de iniciar otro re-entrenamiento al finalizar el actual.")
+            pass
+        elif CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO >= CANTIDAD_MAX_LOGS_REENTRENAMIENTO:
+            print("Iniciando proceso de re-entrenamiento por cantidad de logs alcanzada...")
+            retraining()
+
+        # Si la deriva está activa, damos prioridad al re-entrenamiento para intentar mitigarla lo antes posible
+        elif drift_status_actual.get("alert_active", False):
+            print("Iniciando proceso de re-entrenamiento por alerta de deriva activa...")
+            retraining()
+
+        # Si ha pasado un tiempo considerable desde el último re-entrenamiento se inicia uno nuevo
+        elif time.time() - ULTIMO_REENTRENAMIENTO_TIMESTAMP >= REENTRENAMIENTO_INTERVALO:
+            print("Iniciando proceso de re-entrenamiento por intervalo de tiempo alcanzado...")
+            retraining()
+
+        
         return {
             "prediccion": prediccion_decodificada,
             "prediccion_codificada": prediccion.tolist(),
@@ -909,10 +984,11 @@ def predict(input_data: List[InputParaElModelo]):
                 "last_sample_score": drift_status_actual.get("last_sample_score", 0),
                 "rolling_drift_score": drift_status_actual.get("rolling_drift_score", 0),
                 "alert_reason": drift_status_actual.get("alert_reason"),
-            },
+            }
         }
 
     except Exception as e:
         columnas = df_input.columns if "df_input" in locals() else []
         print(columnas)
         raise HTTPException(status_code=500, detail=str(columnas) + " - " + str(e))
+

@@ -10,6 +10,8 @@ COPY src/preprocesamiento.py src/
 COPY src/alerting.py src/
 COPY src/drift.py src/
 COPY src/api.py src/
+COPY src/retraining.py src/
+COPY src/train.py src/
 
 EXPOSE 8000
 

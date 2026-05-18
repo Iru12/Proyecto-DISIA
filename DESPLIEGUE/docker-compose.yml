@@ -37,6 +37,10 @@ services:
       - ALERT_MODEL_F1_MACRO_MIN=0.90
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - PREDICTIONS_LOG_PATH=/app/datos/preprocesados/predicciones_inferencia.log
+      - PREDICTION_AUDIT_LOG_PATH=/app/datos/preprocesados/prediction_audit.log
+      - TRAIN_ANTIGUO_PATH=/app/datos/preprocesados/X_train_final.csv
+      - TRAIN_ANTIGUO_PATH_Y=/app/datos/preprocesados/y_train_class1.csv
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 30s
