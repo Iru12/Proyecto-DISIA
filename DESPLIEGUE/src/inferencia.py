@@ -315,11 +315,15 @@ if __name__ == "__main__":
     }
     ]
 
+    app_root = os.getenv("APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    data_dir = os.getenv("DATA_DIR", os.path.join(app_root, "datos", "preprocesados"))
+    model_dir = os.getenv("MODEL_DIR", os.path.join(app_root, "modelos"))
+
     parser = argparse.ArgumentParser(description="Inferencia con el modelo de detección de anomalías")
     parser.add_argument(
         "--modelo_path",
         type = str,
-        default = "modelos/RF_model.joblib",
+        default = os.path.join(model_dir, "RF_model.joblib"),
         help = "Ruta del archivo del modelo entrenado"
     )
     parser.add_argument(
@@ -331,7 +335,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--artefactos_path",
         type = str,
-        default = "datos/preprocesados/artefactos_inferencia.joblib",
+        default = os.path.join(data_dir, "artefactos_inferencia.joblib"),
         help = "Ruta del archivo de artefactos para el preprocesamiento"
     )
     args = parser.parse_args()

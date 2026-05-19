@@ -77,31 +77,31 @@ docker compose up inferencia
 Swagger:
 
 ```text
-http://localhost:8000/docs
+http://localhost:18080/docs
 ```
 
 Salud:
 
 ```text
-http://localhost:8000/health
+http://localhost:18080/health
 ```
 
 Informacion del modelo:
 
 ```text
-http://localhost:8000/model-info
+http://localhost:18080/model-info
 ```
 
 Metricas del modelo activo:
 
 ```text
-http://localhost:8000/model/metrics
+http://localhost:18080/model/metrics
 ```
 
 Metricas operativas en formato Prometheus:
 
 ```text
-http://localhost:8000/metrics
+http://localhost:18080/metrics
 ```
 
 Este endpoint expone, entre otras, estas metricas:
@@ -141,13 +141,13 @@ Esta referencia aprende un perfil no supervisado del trafico normal de validacio
 Estado de deriva:
 
 ```text
-http://localhost:8000/drift/status
+http://localhost:18080/drift/status
 ```
 
 Reiniciar la ventana de deriva para una demo:
 
 ```text
-POST http://localhost:8000/admin/drift/reset
+POST http://localhost:18080/admin/drift/reset
 ```
 
 La respuesta de `/predict` incluye un bloque `drift` con `alert_active`, `last_sample_score` y `rolling_drift_score`.
@@ -163,7 +163,7 @@ README_ALERTAS.md
 Estado de alertas:
 
 ```text
-http://localhost:8000/alerts/status
+http://localhost:18080/alerts/status
 ```
 
 La API registra alertas en:
@@ -282,19 +282,19 @@ La seccion de trafico se centra en `POST /predict`, por lo que se activa al usar
 Modelos disponibles:
 
 ```text
-http://localhost:8000/models
+http://localhost:18080/models
 ```
 
 Comparacion de modelos:
 
 ```text
-http://localhost:8000/models/compare
+http://localhost:18080/models/compare
 ```
 
 Historico de cambios de modelo:
 
 ```text
-http://localhost:8000/admin/models/history
+http://localhost:18080/admin/models/history
 ```
 
 ## Probar prediccion
@@ -311,7 +311,7 @@ El CSV usado como fuente es:
 data_output/X_test_api.csv
 ```
 
-El archivo `examples/predict_example.json` solo se usa como plantilla del contrato JSON esperado por la API.
+El simulador usa `data_output/X_test_api.csv` como fuente principal. Si existe `examples/predict_example.json`, puede usarse como payload fijo opcional con `--source example`.
 
 Respuesta esperada:
 
@@ -382,7 +382,7 @@ Tambien se puede ajustar manualmente:
 Si la API esta en otra URL:
 
 ```powershell
-..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --url http://localhost:8000/predict --requests 50 --delay 1
+..\.venv\Scripts\python.exe .\scripts\simulate_traffic.py --url http://localhost:18080/predict --requests 50 --delay 1
 ```
 
 Para enviar una unica muestra real del split de test y ver la respuesta:
@@ -410,7 +410,7 @@ cd C:\Users\usuario\Desktop\MARCELO\MASTER\dsia-hito5\Proyecto-DISIA\DESPLIEGUE
 URLs que se deben tener abiertas:
 
 ```text
-API:        http://localhost:8000/docs
+API:        http://localhost:18080/docs
 Prometheus: http://localhost:9090
 Grafana:    http://localhost:3000
 Dashboard:  Dashboards > DISIA > DISIA - Observabilidad API
@@ -419,8 +419,8 @@ Dashboard:  Dashboards > DISIA > DISIA - Observabilidad API
 ### 1. Empezar con estado limpio
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/admin/drift/reset -Method Post
-Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/alerts/reset -Method Post
 ```
 
 ### 2. Trafico normal y metricas sin alerta
@@ -432,8 +432,8 @@ Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
 Comprobar:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/drift/status
-Invoke-RestMethod http://localhost:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/drift/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Resultado esperado:
@@ -455,8 +455,8 @@ En Grafana, la seccion `Deriva y alertas` debe mostrar `Deriva activa = OK`.
 Comprobar:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/drift/status
-Invoke-RestMethod http://localhost:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/drift/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Resultado esperado:
@@ -476,7 +476,7 @@ Sin resetear la deriva, forzar errores 404:
 ```powershell
 1..25 | ForEach-Object {
   try {
-    Invoke-WebRequest -UseBasicParsing "http://localhost:8000/ruta-inexistente" | Out-Null
+    Invoke-WebRequest -UseBasicParsing "http://localhost:18080/ruta-inexistente" | Out-Null
   } catch {}
 }
 ```
@@ -484,7 +484,7 @@ Sin resetear la deriva, forzar errores 404:
 Comprobar:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Resultado esperado:

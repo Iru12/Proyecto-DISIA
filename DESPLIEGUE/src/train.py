@@ -125,17 +125,21 @@ def entrenar_modelo(
 
 
 if __name__ == "__main__":
+    app_root = os.getenv("APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    data_dir = os.getenv("DATA_DIR", os.path.join(app_root, "datos", "preprocesados"))
+    model_dir = os.getenv("MODEL_DIR", os.path.join(app_root, "modelos"))
+
     parser = argparse.ArgumentParser(description="Entrenamiento del modelo")
     parser.add_argument(
         "--input",
         type=str,
-        default="datos/preprocesados",
+        default=data_dir,
         help="Ruta del directorio con los datos preprocesados",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="modelos",
+        default=model_dir,
         help="Ruta del directorio donde se guardara el modelo entrenado",
     )
     parser.add_argument(

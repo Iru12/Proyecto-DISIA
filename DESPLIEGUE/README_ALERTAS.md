@@ -127,7 +127,7 @@ docker compose up --build inferencia prometheus grafana
 7. Confirmar que la API detecta el canal:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/health
+Invoke-RestMethod http://localhost:18080/health
 ```
 
 En `alert_channels` deberia aparecer:
@@ -137,12 +137,12 @@ local_history
 telegram
 ```
 
-Para ejecucion local sin Docker, se pueden definir las variables antes de arrancar:
+Para ejecucion dockerizada, se pueden definir las variables antes de arrancar:
 
 ```powershell
 $env:TELEGRAM_BOT_TOKEN="TOKEN_DEL_BOT"
 $env:TELEGRAM_CHAT_ID="CHAT_ID"
-.\run_api_local.ps1
+docker compose up inferencia
 ```
 
 ## Persistencia de la configuracion
@@ -171,8 +171,8 @@ docker compose up --build inferencia prometheus grafana
 El estado activo de deriva y alertas no es permanente: se puede limpiar con:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/admin/drift/reset -Method Post
-Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/alerts/reset -Method Post
 ```
 
 El historico local si queda guardado en:
@@ -309,7 +309,7 @@ Para una demo forzada, se puede arrancar la API con un umbral mas alto que el re
 
 ```powershell
 $env:ALERT_MODEL_F1_MACRO_MIN="0.99"
-.\run_api_local.ps1
+docker compose up inferencia
 ```
 
 ### 4. Deriva de datos activa
@@ -378,7 +378,7 @@ api_alert_active
 Ejemplo de consulta:
 
 ```powershell
-(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/metrics).Content | Select-String "api_alert"
+(Invoke-WebRequest -UseBasicParsing http://localhost:18080/metrics).Content | Select-String "api_alert"
 ```
 
 En Prometheus tambien se pueden consultar directamente:
@@ -429,19 +429,19 @@ Dashboard:
 Dashboards > DISIA > DISIA - Observabilidad API
 ```
 
-## Demo local
+## Demo Docker
 
 Levantar la API:
 
 ```powershell
 cd DESPLIEGUE
-.\run_api_local.ps1
+docker compose up inferencia
 ```
 
 En otra terminal, resetear alertas:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/admin/alerts/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/alerts/reset -Method Post
 ```
 
 ### Demo de alerta operativa
@@ -451,7 +451,7 @@ Generar errores 404 llamando a una ruta inexistente:
 ```powershell
 1..25 | ForEach-Object {
   try {
-    Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ruta-inexistente
+    Invoke-WebRequest -UseBasicParsing http://localhost:18080/ruta-inexistente
   } catch {}
 }
 ```
@@ -459,7 +459,7 @@ Generar errores 404 llamando a una ruta inexistente:
 Consultar alertas:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Debe aparecer activa:
@@ -473,8 +473,8 @@ operational_http_error_rate
 Resetear deriva y alertas:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/admin/drift/reset -Method Post
-Invoke-RestMethod http://127.0.0.1:8000/admin/alerts/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/alerts/reset -Method Post
 ```
 
 Enviar trafico anomalo:
@@ -486,7 +486,7 @@ Enviar trafico anomalo:
 Consultar alertas:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Debe aparecer activa:
@@ -502,8 +502,8 @@ Para ver dos alertas activas a la vez, no se deben resetear las alertas entre un
 Desde `DESPLIEGUE`:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/admin/drift/reset -Method Post
-Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/alerts/reset -Method Post
 ```
 
 Activar deriva:
@@ -517,7 +517,7 @@ Sin resetear, activar la alerta HTTP:
 ```powershell
 1..25 | ForEach-Object {
   try {
-    Invoke-WebRequest -UseBasicParsing "http://localhost:8000/ruta-inexistente" | Out-Null
+    Invoke-WebRequest -UseBasicParsing "http://localhost:18080/ruta-inexistente" | Out-Null
   } catch {}
 }
 ```
@@ -525,7 +525,7 @@ Sin resetear, activar la alerta HTTP:
 Comprobar:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Resultado esperado:
@@ -547,8 +547,8 @@ Enviar trafico sano para limpiar las ventanas recientes:
 Comprobar:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/drift/status
-Invoke-RestMethod http://localhost:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/drift/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Resultado esperado:
@@ -573,7 +573,7 @@ $body = @{
   detail = "Validacion manual del sistema de alertas"
 } | ConvertTo-Json
 
-Invoke-RestMethod -Method Post http://localhost:8000/admin/alerts/test -ContentType "application/json" -Body $body
+Invoke-RestMethod -Method Post http://localhost:18080/admin/alerts/test -ContentType "application/json" -Body $body
 ```
 
 Si Telegram esta bien configurado, debe llegar un mensaje al chat con:

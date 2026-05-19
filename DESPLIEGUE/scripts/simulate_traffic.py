@@ -12,6 +12,74 @@ DEFAULT_URL = "http://localhost:8000/predict"
 DEFAULT_PAYLOAD = Path(__file__).resolve().parents[1] / "examples" / "predict_example.json"
 DEFAULT_TEST_DATA = Path(__file__).resolve().parents[1] / "data_output" / "X_test_api.csv"
 
+API_FIELDS = [
+    "Date",
+    "Timestamp",
+    "Scr_IP",
+    "Scr_port",
+    "Des_IP",
+    "Des_port",
+    "Protocol",
+    "Service",
+    "Duration",
+    "Scr_bytes",
+    "Des_bytes",
+    "Conn_state",
+    "missed_bytes",
+    "is_syn_only",
+    "Is_SYN_ACK",
+    "is_pure_ack",
+    "is_with_payload",
+    "FIN_or_RST",
+    "Bad_checksum",
+    "is_SYN_with_RST",
+    "Scr_pkts",
+    "Scr_ip_bytes",
+    "Des_pkts",
+    "Des_ip_bytes",
+    "anomaly_alert",
+    "total_bytes",
+    "total_packet",
+    "paket_rate",
+    "byte_rate",
+    "Scr_packts_ratio",
+    "Des_pkts_ratio",
+    "Scr_bytes_ratio",
+    "Des_bytes_ratio",
+    "Avg_user_time",
+    "Std_user_time",
+    "Avg_nice_time",
+    "Std_nice_time",
+    "Avg_system_time",
+    "Std_system_time",
+    "Avg_iowait_time",
+    "Std_iowait_time",
+    "Avg_ideal_time",
+    "Std_ideal_time",
+    "Avg_tps",
+    "Std_tps",
+    "Avg_rtps",
+    "Std_rtps",
+    "Avg_wtps",
+    "Std_wtps",
+    "Avg_ldavg_1",
+    "Std_ldavg_1",
+    "Avg_kbmemused",
+    "Std_kbmemused",
+    "Avg_num_Proc_s",
+    "Std_num_proc_s",
+    "Avg_num_cswch_s",
+    "std_num_cswch_s",
+    "OSSEC_alert",
+    "OSSEC_alert_level",
+    "Login_attempt",
+    "Succesful_login",
+    "File_activity",
+    "Process_activity",
+    "read_write_physical_process",
+    "is_privileged",
+]
+
 MODE_CONFIG = {
     "normal": {"requests": 1000, "delay": 1.0, "jitter": 0.2},
     "burst": {"requests": 1000, "delay": 0.1, "jitter": 0.05},
@@ -142,7 +210,7 @@ def is_valid_row(row, reference_row):
     return True
 
 
-def load_test_rows(path, reference_payload):
+def load_test_rows(path, required_fields=API_FIELDS):
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(
@@ -150,7 +218,6 @@ def load_test_rows(path, reference_payload):
             "o usa --source example."
         )
 
-    reference_row = reference_payload[0]
     valid_rows = []
     skipped_rows = 0
 
@@ -159,8 +226,10 @@ def load_test_rows(path, reference_payload):
         for row in reader:
             parsed_row = {key: parse_csv_value(value) for key, value in row.items()}
 
-            if is_valid_row(parsed_row, reference_row):
-                valid_rows.append({key: parsed_row[key] for key in reference_row.keys()})
+            if all(key in parsed_row for key in required_fields) and all(
+                is_valid_value(key, parsed_row[key]) for key in required_fields
+            ):
+                valid_rows.append({key: parsed_row[key] for key in required_fields})
             else:
                 skipped_rows += 1
 
@@ -190,7 +259,7 @@ def perturb_anomalous_row(row, factor):
 
 def build_payload(source, example_payload, test_rows, anomaly_factor):
     if source == "example":
-        return example_payload
+        return example_payload if example_payload is not None else [random.choice(test_rows)]
     if source == "anomalous":
         return [perturb_anomalous_row(random.choice(test_rows), anomaly_factor)]
 
@@ -245,8 +314,10 @@ def main():
     total_requests = args.requests if args.requests is not None else config["requests"]
     delay = args.delay if args.delay is not None else config["delay"]
     jitter = args.jitter if args.jitter is not None else config["jitter"]
-    example_payload = load_payload(args.payload)
-    test_rows = load_test_rows(args.test_data, example_payload) if args.source in {"test", "anomalous"} else []
+    test_rows = load_test_rows(args.test_data)
+    example_payload = None
+    if args.source == "example" and Path(args.payload).is_file():
+        example_payload = load_payload(args.payload)
 
     successes = 0
     failures = 0

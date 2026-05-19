@@ -8,6 +8,10 @@ services:
       - ./models_output:/app/modelos
       - ./data_output:/app/datos/preprocesados
     environment:
+      - APP_ROOT=/app
+      - RAW_DATA_DIR=/app/datos/crudo
+      - DATA_DIR=/app/datos/preprocesados
+      - MODEL_DIR=/app/modelos
       - MODEL_VERSION=${MODEL_VERSION:-RF_v1}
       - N_ESTIMATORS=${N_ESTIMATORS:-120}
       - MIN_SAMPLES_LEAF=${MIN_SAMPLES_LEAF:-2}
@@ -19,17 +23,14 @@ services:
       dockerfile: DockerFile.inferencia
     container_name: api
     ports:
-      - "8000:8000"
+      - "${API_HOST:-127.0.0.1}:${API_PORT:-8000}:8000"
     volumes:
       - ./models_output:/app/modelos
       - ./data_output:/app/datos/preprocesados
     environment:
-      - MODELO_PATH=/app/modelos/RF_model.joblib
-      - ARTEFACTOS_PATH=/app/datos/preprocesados/artefactos_inferencia.joblib
-      - DRIFT_REFERENCE_PATH=/app/datos/preprocesados/drift_reference.json
-      - MODEL_METADATA_PATH=/app/modelos/current_model_metadata.json
-      - MODEL_SELECTION_HISTORY_PATH=/app/modelos/model_selection_history.jsonl
-      - ALERT_HISTORY_PATH=/app/modelos/alerts_history.jsonl
+      - APP_ROOT=/app
+      - DATA_DIR=/app/datos/preprocesados
+      - MODEL_DIR=/app/modelos
       - ALERT_OPERATIONAL_WINDOW_SIZE=50
       - ALERT_OPERATIONAL_MIN_WINDOW_SIZE=10
       - ALERT_ERROR_RATE_THRESHOLD=0.30
@@ -37,10 +38,7 @@ services:
       - ALERT_MODEL_F1_MACRO_MIN=0.90
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
-      - PREDICTIONS_LOG_PATH=/app/datos/preprocesados/predicciones_inferencia.log
-      - PREDICTION_AUDIT_LOG_PATH=/app/datos/preprocesados/prediction_audit.log
-      - TRAIN_ANTIGUO_PATH=/app/datos/preprocesados/X_train_final.csv
-      - TRAIN_ANTIGUO_PATH_Y=/app/datos/preprocesados/y_train_class1.csv
+      - RETRAINING_MIN_VALIDATED_SAMPLES=${RETRAINING_MIN_VALIDATED_SAMPLES:-50}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 30s

@@ -281,18 +281,21 @@ def preparar_datos_api(df):
     return df_api
 
 if __name__ == "__main__":
+    app_root = os.getenv("APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    raw_data_dir = os.getenv("RAW_DATA_DIR", os.path.join(app_root, "datos", "crudo"))
+    data_dir = os.getenv("DATA_DIR", os.path.join(app_root, "datos", "preprocesados"))
 
     parser = argparse.ArgumentParser(description="Preprocesamiento de datos")
     parser.add_argument(
         "--datos_crudos",
         type=str, 
-        default = "datos/crudo/X-IIoTID dataset.csv", 
+        default = os.path.join(raw_data_dir, "X-IIoTID dataset.csv"), 
         help = "Ruta del archivo CSV con los datos crudos"
     )
     parser.add_argument(
         "--output_dir",
         type=str, 
-        default = "datos/preprocesados", 
+        default = data_dir, 
         help = "Ruta del directorio de salida para los datos preprocesados"
     )
 

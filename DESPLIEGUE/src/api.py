@@ -4,6 +4,7 @@ import subprocess
 import threading
 import joblib
 import time
+import uuid
 from collections import deque
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -12,7 +13,7 @@ from inferencia import modelo_deteccion_anomalias
 from drift import DriftMonitor
 from alerting import AlertManager
 import pandas as pd
-from typing import List
+from typing import List, Optional
 from threading import Lock
 from datetime import datetime, timezone
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -24,13 +25,27 @@ app = FastAPI(
     "En el caso de ser anómalo, muestra el tipo de ataque detectado."
 )
 
-modelo_path = os.getenv("MODELO_PATH", "modelos/RF_model.joblib")
-artefactos_path = os.getenv("ARTEFACTOS_PATH", "artefactos/preprocesamiento_artifacts.joblib")
-metadata_path = os.getenv("MODEL_METADATA_PATH", "/app/modelos/current_model_metadata.json")
-drift_reference_path = os.getenv("DRIFT_REFERENCE_PATH", "artefactos/drift_reference.json")
-modelos_dir = os.path.dirname(modelo_path) or "."
+app_root = os.getenv("APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+data_dir = os.getenv("DATA_DIR", os.path.join(app_root, "datos", "preprocesados"))
+model_dir = os.getenv("MODEL_DIR", os.path.join(app_root, "modelos"))
+
+modelo_path = os.getenv("MODELO_PATH", os.path.join(model_dir, "RF_model.joblib"))
+artefactos_path = os.getenv("ARTEFACTOS_PATH", os.path.join(data_dir, "artefactos_inferencia.joblib"))
+metadata_path = os.getenv("MODEL_METADATA_PATH", os.path.join(model_dir, "current_model_metadata.json"))
+drift_reference_path = os.getenv("DRIFT_REFERENCE_PATH", os.path.join(data_dir, "drift_reference.json"))
+modelos_dir = os.getenv("MODEL_DIR", os.path.dirname(modelo_path) or model_dir)
+modelo_alias_path = os.path.join(modelos_dir, "RF_model.joblib")
+metadata_alias_path = metadata_path
 selection_history_path = os.getenv("MODEL_SELECTION_HISTORY_PATH", os.path.join(modelos_dir, "model_selection_history.jsonl"))
 alert_history_path = os.getenv("ALERT_HISTORY_PATH", os.path.join(modelos_dir, "alerts_history.jsonl"))
+retraining_review_queue_path = os.getenv(
+    "RETRAINING_REVIEW_QUEUE_PATH",
+    os.path.join(data_dir, "retraining_review_queue.jsonl"),
+)
+retraining_validated_path = os.getenv(
+    "RETRAINING_VALIDATED_PATH",
+    os.path.join(data_dir, "retraining_validated.jsonl"),
+)
 operational_window_size = int(os.getenv("ALERT_OPERATIONAL_WINDOW_SIZE", "50"))
 operational_min_window_size = int(os.getenv("ALERT_OPERATIONAL_MIN_WINDOW_SIZE", "10"))
 operational_error_rate_threshold = float(os.getenv("ALERT_ERROR_RATE_THRESHOLD", "0.30"))
@@ -102,6 +117,27 @@ ALERT_ACTIVE = Gauge(
     "api_alert_active",
     "Indica si una alerta esta activa",
     ["category", "severity", "key"],
+)
+RETRAINING_REVIEW_PENDING = Gauge(
+    "api_retraining_review_pending",
+    "Numero de muestras pendientes de validacion humana para reentrenamiento",
+)
+RETRAINING_VALIDATED_SAMPLES = Gauge(
+    "api_retraining_validated_samples",
+    "Numero de muestras validadas disponibles para reentrenamiento",
+)
+RETRAINING_MIN_VALIDATED_SAMPLES = Gauge(
+    "api_retraining_min_validated_samples",
+    "Minimo de muestras validadas requerido para reentrenar",
+)
+RETRAINING_IN_PROGRESS_GAUGE = Gauge(
+    "api_retraining_in_progress",
+    "Indica si hay un reentrenamiento en curso",
+)
+RETRAINING_LAST_STATUS = Gauge(
+    "api_retraining_last_status",
+    "Estado del ultimo intento de reentrenamiento. El estado activo vale 1",
+    ["status"],
 )
 
 
@@ -427,6 +463,119 @@ def leer_historial_cambios(limit=50):
     return list(reversed(registros))
 
 
+def escribir_jsonl(path, registro):
+    directorio = os.path.dirname(path)
+    if directorio:
+        os.makedirs(directorio, exist_ok=True)
+
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(registro, ensure_ascii=False) + "\n")
+
+
+def leer_jsonl(path, limit=None):
+    if not os.path.isfile(path):
+        return []
+
+    with open(path, "r", encoding="utf-8") as f:
+        lineas = [line.strip() for line in f if line.strip()]
+
+    if limit is not None:
+        lineas = lineas[-limit:]
+
+    return [json.loads(linea) for linea in lineas]
+
+
+def buscar_muestra_revision(sample_id):
+    for registro in leer_jsonl(retraining_review_queue_path):
+        if registro.get("sample_id") == sample_id:
+            return registro
+
+    return None
+
+
+def ids_muestras_validadas():
+    return {
+        registro.get("sample_id")
+        for registro in leer_jsonl(retraining_validated_path)
+        if registro.get("sample_id")
+    }
+
+
+def listar_muestras_pendientes(limit=50):
+    validadas = ids_muestras_validadas()
+    pendientes = [
+        registro
+        for registro in leer_jsonl(retraining_review_queue_path)
+        if registro.get("sample_id") not in validadas
+    ]
+    return list(reversed(pendientes[-limit:]))
+
+
+def contar_muestras_pendientes_revision():
+    validadas = ids_muestras_validadas()
+    return sum(
+        1
+        for registro in leer_jsonl(retraining_review_queue_path)
+        if registro.get("sample_id") not in validadas
+    )
+
+
+def contar_muestras_validadas_retraining():
+    return sum(
+        1
+        for registro in leer_jsonl(retraining_validated_path)
+        if registro.get("review_status") == "approved"
+        and registro.get("validated_label")
+        and isinstance(registro.get("input"), dict)
+    )
+
+
+def actualizar_metricas_retraining():
+    RETRAINING_REVIEW_PENDING.set(contar_muestras_pendientes_revision())
+    RETRAINING_VALIDATED_SAMPLES.set(contar_muestras_validadas_retraining())
+    RETRAINING_MIN_VALIDATED_SAMPLES.set(float(os.getenv("RETRAINING_MIN_VALIDATED_SAMPLES", "50")))
+    RETRAINING_IN_PROGRESS_GAUGE.set(1 if RETRAINING_IN_PROGRESS else 0)
+
+
+def actualizar_ultimo_estado_retraining(status):
+    for estado in ["success", "skipped", "failed"]:
+        RETRAINING_LAST_STATUS.labels(status=estado).set(1 if status == estado else 0)
+
+
+def recargar_modelo_reentrenado(previous_model=None):
+    global modelo, modelo_path, metadata_path, label_encoder
+
+    metadata_reentrenada = cargar_json_si_existe(metadata_alias_path) or {}
+    version_reentrenada = metadata_reentrenada.get(
+        "model_version",
+        os.path.basename(modelo_alias_path).replace(".joblib", ""),
+    )
+    modelo_reentrenado = modelo_deteccion_anomalias(modelo_path=modelo_alias_path)
+    label_encoder_reentrenado = cargar_label_encoder_modelo(
+        metadata_path_activo=metadata_alias_path,
+        modelo_path_activo=modelo_alias_path,
+    )
+
+    with modelo_lock:
+        if previous_model is None:
+            metadata_anterior = cargar_metadata_modelo()
+            previous_model = obtener_version_modelo_activo(metadata_anterior)
+        modelo = modelo_reentrenado
+        modelo_path = modelo_alias_path
+        metadata_path = metadata_alias_path
+        label_encoder = label_encoder_reentrenado
+        actualizar_metrica_modelo_activo()
+        evaluar_alerta_metrica_modelo()
+
+    registrar_cambio_modelo(
+        previous_model=previous_model,
+        new_model=version_reentrenada,
+        status="success",
+        detail="Modelo reentrenado cargado automaticamente en memoria",
+    )
+    print(f"Modelo reentrenado cargado en memoria: {version_reentrenada}")
+
+
 if not os.path.isfile(artefactos_path):
     raise FileNotFoundError(f"El archivo de artefactos no existe: {artefactos_path}")
 
@@ -435,6 +584,8 @@ label_encoder = cargar_label_encoder_modelo()
 actualizar_metrica_modelo_activo()
 evaluar_alerta_metrica_modelo()
 actualizar_metricas_deriva(drift_monitor.status())
+actualizar_metricas_retraining()
+actualizar_ultimo_estado_retraining(None)
 
 
 class SeleccionModelo(BaseModel):
@@ -453,6 +604,13 @@ class AlertaPrueba(BaseModel):
         "Validacion manual del canal de alertas",
         json_schema_extra={"example": "Validacion manual del canal de alertas"}
     )
+
+
+class EtiquetaValidada(BaseModel):
+    sample_id: str = Field(..., json_schema_extra={"example": "2026-05-19T15:30:10.123456+00:00_a1b2c3d4"})
+    validated_label: str = Field("normal", json_schema_extra={"example": "normal"})
+    reviewer: Optional[str] = Field(None, json_schema_extra={"example": "rafa"})
+    notes: Optional[str] = Field(None, json_schema_extra={"example": "Validado manualmente"})
 
 
 class InputParaElModelo(BaseModel):
@@ -775,6 +933,7 @@ def model_metrics():
 
 @app.get("/metrics")
 def prometheus_metrics():
+    actualizar_metricas_retraining()
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -818,6 +977,59 @@ def model_selection_history(limit: int = 50):
     return {
         "history_file": selection_history_path,
         "changes": leer_historial_cambios(limit=limit),
+    }
+
+
+@app.get("/admin/retraining/review-queue")
+def retraining_review_queue(limit: int = 50):
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit debe estar entre 1 y 500")
+
+    pendientes = listar_muestras_pendientes(limit=limit)
+    return {
+        "review_queue_file": retraining_review_queue_path,
+        "validated_file": retraining_validated_path,
+        "pending_count_returned": len(pendientes),
+        "pending_samples": pendientes,
+    }
+
+
+@app.post("/admin/retraining/labels")
+def validate_retraining_label(etiqueta: EtiquetaValidada):
+    muestra = buscar_muestra_revision(etiqueta.sample_id)
+    if muestra is None:
+        raise HTTPException(status_code=404, detail=f"No existe sample_id pendiente: {etiqueta.sample_id}")
+
+    if etiqueta.sample_id in ids_muestras_validadas():
+        raise HTTPException(status_code=409, detail=f"sample_id ya validado: {etiqueta.sample_id}")
+
+    validated_label = etiqueta.validated_label.strip().lower()
+    clases_validas = cargar_metadata_modelo().get("classes", [])
+    if clases_validas and validated_label not in clases_validas:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "validated_label no existe entre las clases conocidas del modelo",
+                "allowed_labels": clases_validas,
+            },
+        )
+
+    registro_validado = {
+        **muestra,
+        "review_status": "approved",
+        "validated_label": validated_label,
+        "label_source": "human",
+        "reviewer": etiqueta.reviewer,
+        "review_notes": etiqueta.notes,
+        "validated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    escribir_jsonl(retraining_validated_path, registro_validado)
+
+    return {
+        "status": "validated",
+        "sample_id": etiqueta.sample_id,
+        "validated_label": validated_label,
+        "validated_file": retraining_validated_path,
     }
 
 
@@ -889,8 +1101,38 @@ def retraining():
         global CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO
         global ULTIMO_REENTRENAMIENTO_TIMESTAMP
 
+        previous_model = None
         try:
-            subprocess.run(["python", "retraining.py"])
+            previous_model = obtener_version_modelo_activo(cargar_metadata_modelo())
+            resultado = subprocess.run(["python", "retraining.py"])
+            if resultado.returncode == 0:
+                recargar_modelo_reentrenado(previous_model=previous_model)
+                actualizar_ultimo_estado_retraining("success")
+            elif resultado.returncode == 2:
+                registrar_cambio_modelo(
+                    previous_model=previous_model,
+                    new_model=None,
+                    status="skipped",
+                    detail="Reentrenamiento omitido: no hay suficientes muestras validadas",
+                )
+                actualizar_ultimo_estado_retraining("skipped")
+            else:
+                registrar_cambio_modelo(
+                    previous_model=previous_model,
+                    new_model=None,
+                    status="failed",
+                    detail=f"Reentrenamiento fallido con codigo de salida {resultado.returncode}",
+                )
+                actualizar_ultimo_estado_retraining("failed")
+        except Exception as e:
+            registrar_cambio_modelo(
+                previous_model=previous_model or obtener_version_modelo_activo(cargar_metadata_modelo()),
+                new_model=None,
+                status="failed",
+                detail=f"No se pudo recargar el modelo reentrenado: {e}",
+            )
+            actualizar_ultimo_estado_retraining("failed")
+            print(f"No se pudo recargar el modelo reentrenado: {e}")
         finally:
             RETRAINING_IN_PROGRESS = False
             CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO = 0
@@ -942,17 +1184,52 @@ def predict(input_data: List[InputParaElModelo]):
             PREDICTIONS_BY_CLASS_TOTAL.labels(predicted_class=str(clase_predicha)).inc()
         print(prediccion)
 
-        # Guardamos la instancia para re-entrenamiento futuro en caso de deriva, junto con su predicción y el resultado de la monitorización de deriva
-        predicciones_log_path = os.getenv("PREDICTIONS_LOG_PATH", "/app/datos/preprocesados/predicciones_inferencia.log")
+        metadata_activa = cargar_metadata_modelo()
+        model_version_activa = obtener_version_modelo_activo(metadata_activa)
+        timestamp_prediccion = datetime.now(timezone.utc).isoformat()
+        registros_preprocesados = X_preprocesado.to_dict(orient="records")
+        muestras_revision = []
+        sample_score_threshold = float(drift_status_actual.get("sample_alert_threshold", 0))
+        last_sample_score = float(drift_status_actual.get("last_sample_score", 0))
+        enviar_a_revision = bool(drift_status_actual.get("alert_active", False)) or (
+            sample_score_threshold > 0 and last_sample_score >= sample_score_threshold
+        )
 
-        with open(predicciones_log_path, "a", encoding="utf-8") as f:
-            registro_drift = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input": X_preprocesado.to_dict(orient="records"),
-                "prediction": prediccion_decodificada,
-                "drift_status": drift_status_actual,
-            }
-            f.write(json.dumps(registro_drift) + "\n")
+        if enviar_a_revision:
+            for index, registro_preprocesado in enumerate(registros_preprocesados):
+                sample_id = f"{timestamp_prediccion}_{uuid.uuid4().hex[:8]}"
+                muestra_revision = {
+                    "sample_id": sample_id,
+                    "timestamp": timestamp_prediccion,
+                    "model_version": model_version_activa,
+                    "input": registro_preprocesado,
+                    "prediction": prediccion_decodificada[index],
+                    "prediction_code": int(prediccion[index]),
+                    "drift_status": drift_status_actual,
+                    "review_reason": drift_status_actual.get("alert_reason") or "sample_out_of_profile",
+                    "review_status": "pending",
+                }
+                escribir_jsonl(retraining_review_queue_path, muestra_revision)
+                muestras_revision.append({
+                    "sample_id": sample_id,
+                    "predicted_label": prediccion_decodificada[index],
+                    "review_reason": muestra_revision["review_reason"],
+                    "review_status": "pending",
+                })
+
+        # Guardamos la instancia para re-entrenamiento futuro en caso de deriva, junto con su predicción y el resultado de la monitorización de deriva
+        predicciones_log_path = os.getenv("PREDICTIONS_LOG_PATH", os.path.join(data_dir, "predicciones_inferencia.log"))
+
+        registro_drift = {
+            "timestamp": timestamp_prediccion,
+            "model_version": model_version_activa,
+            "input": registros_preprocesados,
+            "prediction": prediccion_decodificada,
+            "queued_for_review": enviar_a_revision,
+            "review_samples": muestras_revision,
+            "drift_status": drift_status_actual,
+        }
+        escribir_jsonl(predicciones_log_path, registro_drift)
         
         with lock:
             CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO += 1
@@ -984,7 +1261,9 @@ def predict(input_data: List[InputParaElModelo]):
                 "last_sample_score": drift_status_actual.get("last_sample_score", 0),
                 "rolling_drift_score": drift_status_actual.get("rolling_drift_score", 0),
                 "alert_reason": drift_status_actual.get("alert_reason"),
-            }
+            },
+            "queued_for_review": enviar_a_revision,
+            "review_samples": muestras_revision,
         }
 
     except Exception as e:

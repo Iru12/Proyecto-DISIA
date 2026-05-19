@@ -214,25 +214,25 @@ Los parametros importantes son:
 
 Importante: `--mode normal` no significa necesariamente "clase normal del dataset"; significa ritmo normal de envio. Para probar recuperacion limpia de deriva conviene usar `--source example`, porque repite un ejemplo estable y sano.
 
-## Demo local
+## Demo Docker
 
 Levantar la API:
 
 ```powershell
 cd DESPLIEGUE
-.\run_api_local.ps1
+docker compose up inferencia
 ```
 
 Consultar estado inicial:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/drift/status
+Invoke-RestMethod http://localhost:18080/drift/status
 ```
 
 Resetear la ventana de deriva:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/drift/reset -Method Post
 ```
 
 Simular trafico normal:
@@ -254,8 +254,8 @@ El modo `anomalous` conserva el contrato JSON de la API, pero infla varias metri
 Desde `DESPLIEGUE`:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/admin/drift/reset -Method Post
-Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/drift/reset -Method Post
+Invoke-RestMethod http://localhost:18080/admin/alerts/reset -Method Post
 ```
 
 1. Enviar trafico sano:
@@ -267,7 +267,7 @@ Invoke-RestMethod http://localhost:8000/admin/alerts/reset -Method Post
 Comprobar:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/drift/status
+Invoke-RestMethod http://localhost:18080/drift/status
 ```
 
 Esperado:
@@ -286,8 +286,8 @@ rolling_drift_score < 0.15
 Comprobar:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/drift/status
-Invoke-RestMethod http://localhost:8000/alerts/status
+Invoke-RestMethod http://localhost:18080/drift/status
+Invoke-RestMethod http://localhost:18080/alerts/status
 ```
 
 Esperado:

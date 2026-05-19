@@ -24,11 +24,14 @@ def ingesta_datos(output_path):
 
 
 if __name__ == "__main__":
+    app_root = os.getenv("APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    raw_data_dir = os.getenv("RAW_DATA_DIR", os.path.join(app_root, "datos", "crudo"))
+
     parser = argparse.ArgumentParser(description="Ingesta de datos desde Kaggle")
     parser.add_argument(
         "--output_path",
         type=str, 
-        default = "datos/crudo", 
+        default = raw_data_dir, 
         help = "Ruta de salida para los datos descargados"
     )
 
