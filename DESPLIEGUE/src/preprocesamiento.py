@@ -22,7 +22,6 @@ def cargar_artefactos_inferencia(artefactos_path):
 def preprocesamiento_inferencia(X_input, artefactos_path):
     artefactos = cargar_artefactos_inferencia(artefactos_path)
 
-    # Cargar cosas
     cols_cat = artefactos["cols_cat"]
     cols_num = artefactos["cols_num"]
     imputer = artefactos["imputer"]
@@ -30,18 +29,15 @@ def preprocesamiento_inferencia(X_input, artefactos_path):
     encoder = artefactos["encoder"]
     cols_finales = artefactos["columnas_finales"]
 
-    # Limpieza
     common_replacements = {'-': np.nan, '?': np.nan, 'nan': np.nan, 'NaN': np.nan}
     for col in X_input.select_dtypes(include=['object', 'string']).columns:
         X_input[col] = X_input[col].astype('string').str.lower().replace(common_replacements)
 
     X_input = fix_dtype(X_input)
-
-    # Numéricas 
+ 
     X_input[cols_num] = imputer.transform(X_input[cols_num])
     X_input[cols_num] = scaler.transform(X_input[cols_num])
 
-    # Categóricas
     for col in cols_cat:
         X_input[col] = X_input[col].fillna('missing')
 
@@ -56,29 +52,24 @@ def preprocesamiento_inferencia(X_input, artefactos_path):
 
     X_input = pd.concat([X_input, df_encoded], axis=1)
 
-    # Selección final
     X_input = X_input.reindex(columns=cols_finales, fill_value=0)
 
     return X_input
 
 def preprocesamiento_inicial(datos_crudos, output_dir):
 
-    # No existe el archivo de datos crudos
     if not os.path.isfile(datos_crudos):
         print(f"Error: El archivo de datos crudos no existe: {datos_crudos}")
         return False
 
-    # Comprobación de la carpeta de salida
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         print(f"Carpeta de salida creada: {output_dir}")
 
     print("Iniciando el preprocesamiento de los datos...")
     try:
-        # Carga de datos
         df = pd.read_csv(datos_crudos, low_memory=False)
 
-        # Limpieza de caracteres no válidos
         common_replacements = {'-': np.nan, '?': np.nan, 'nan': np.nan, 'NaN': np.nan}
         for col in df.select_dtypes(include=['object', 'string']).columns:
             df[col] = df[col].astype('string').str.lower().replace(common_replacements)
@@ -86,7 +77,6 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
         y = df[['class1', 'class2', 'class3']]
         X = df.drop(columns=['class1', 'class2', 'class3'], errors='ignore')    
 
-        # División 70% / 15% / 15% estratificada
         X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y['class3'])
         X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=(0.15/0.85), random_state=42, stratify=y_temp['class3'])
         X_test_api = preparar_datos_api(X_test)
@@ -95,7 +85,6 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
         X_val = fix_dtype(X_val)
         X_test = fix_dtype(X_test)
 
-        # Eliminación de variables agnósticas (IPs, puertos, timestamps)
         columnas_agnosticas = [
             'scr_ip', 'scr_port', 'des_ip', 'des_port', 'scr_bytes', 'des_bytes',
             'scr_pkts', 'des_pkts', 'scr_packts_ratio', 'des_pkts_ratio',
@@ -107,27 +96,21 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
 
         numeric_train = X_train.select_dtypes(include=[np.number])
         varianzas = numeric_train.var().sort_values()
-        # Eliminar varianza = 0
         cols_var_0 = varianzas[varianzas == 0].index.tolist()
         X_train = X_train.drop(columns=cols_var_0, errors='ignore')
         numeric_train = numeric_train.drop(columns=cols_var_0, errors='ignore')
        
-        # --- 2. Correlación con el Target ---
         y_train_bin = y_train['class3'].apply(lambda x: 0 if x == 'normal' else 1)
         corr_with_target = numeric_train.apply(lambda col: col.corr(y_train_bin)).abs().sort_values(ascending=False)
-        # Eliminar correlación < 0.025
         cols_baja_corr = corr_with_target[corr_with_target < 0.025].index.tolist()
         X_train = X_train.drop(columns=cols_baja_corr, errors='ignore')
         numeric_train = numeric_train.drop(columns=cols_baja_corr, errors='ignore')
 
-        # --- 3. Clustering jerárquico (Redundancia) ---
         corr_matrix = numeric_train.corr().abs()
-        # Eliminar redundantes > 0.97
         upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
         cols_redundantes = [column for column in upper.columns if any(upper[column] > 0.97)]
         X_train = X_train.drop(columns=cols_redundantes, errors='ignore')
 
-        # Fase Final de Preprocesamiento: Imputación, Escalado, Codificación y PCA
         X_val = X_val[X_train.columns]
         X_test = X_test[X_train.columns]
 
@@ -176,10 +159,8 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
         pca = PCA(n_components=0.95, random_state=42)
         pca.fit(X_train)
 
-        # Obtener nombres de variables originales
         original_feature_names = np.array(X_train.columns)
 
-        # Contador de importancia
         feature_counter = Counter()
 
         num_top_features = 20
@@ -189,15 +170,12 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
             top_features = original_feature_names[top_indices]
             feature_counter.update(top_features)
 
-        # Variables ordenadas por frecuencia de aparición
         cols_pcafss = [feature for feature, _ in feature_counter.most_common()]
 
-        # Filtrar datasets
         X_train_final = X_train[cols_pcafss].copy()
         X_val_final = X_val[cols_pcafss].copy()
         X_test_final = X_test[cols_pcafss].copy()
 
-        # Exportar datasets preprocesados para X e y
         X_train_final.to_csv(f'{output_dir}/X_train_final.csv', index=False)
         X_val_final.to_csv(f'{output_dir}/X_val_final.csv', index=False)
         X_test_final.to_csv(f'{output_dir}/X_test_final.csv', index=False)
@@ -207,7 +185,6 @@ def preprocesamiento_inicial(datos_crudos, output_dir):
             for cls in ['class1', 'class2', 'class3']:
                 y_split[[cls]].to_csv(f'{output_dir}/y_{split_name}_{cls}.csv', index=False)
         
-        # Características para inferencia
         artefactos = {
             "columnas_finales": cols_pcafss,
             "columnas_modelo": X_train.columns.tolist(),
@@ -247,13 +224,12 @@ def fix_dtype(df, umbral_numerico=0.7):
     int_cols = df.select_dtypes(include=['int64']).columns
     bool_cols = df.select_dtypes(include=['bool']).columns
 
-    # Convertir booleanos a float
     df[bool_cols] = df[bool_cols].astype(float)
 
     for col in object_cols:
         valores_unicos = df[col].dropna().unique()
 
-        if {"true", "false"} <= set(valores_unicos):  # Verifica si ambos existen
+        if {"true", "false"} <= set(valores_unicos):  
             df[col] = df[col].map({'true': 1, 'false': 0}).astype(float)
         else:
             converted = pd.to_numeric(df[col], errors='coerce')

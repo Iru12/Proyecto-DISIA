@@ -59,7 +59,7 @@ CANTIDAD_MAX_LOGS_REENTRENAMIENTO = 1000
 CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO = 0
 RETRAINING_IN_PROGRESS = False
 ULTIMO_REENTRENAMIENTO_TIMESTAMP = time.time()
-REENTRENAMIENTO_INTERVALO = 3600 # Cada hora
+REENTRENAMIENTO_INTERVALO = 3600 
 lock = threading.Lock()
 
 HTTP_REQUESTS_TOTAL = Counter(
@@ -1157,7 +1157,6 @@ def predict(input_data: List[InputParaElModelo]):
     global REENTRENAMIENTO_INTERVALO
 
     try:
-        # Convertir el modelo de entrada a un DataFrame
         df_input = pd.DataFrame([input_data.model_dump() for input_data in input_data])
 
         df_input.rename(columns={"Avg_num_cswch_s": "Avg_num_cswch/s",
@@ -1167,12 +1166,10 @@ def predict(input_data: List[InputParaElModelo]):
                                 inplace=True
                         )
 
-        # Preprocesar los datos de entrada
         X_preprocesado= preprocesamiento_inferencia(df_input, artefactos_path=artefactos_path)
         drift_status_actual = drift_monitor.observe(X_preprocesado)
         actualizar_metricas_deriva(drift_status_actual)
 
-        # Realizar la predicción
         with modelo_lock:
             modelo_activo = modelo
             label_encoder_activo = label_encoder
@@ -1217,7 +1214,6 @@ def predict(input_data: List[InputParaElModelo]):
                     "review_status": "pending",
                 })
 
-        # Guardamos la instancia para re-entrenamiento futuro en caso de deriva, junto con su predicción y el resultado de la monitorización de deriva
         predicciones_log_path = os.getenv("PREDICTIONS_LOG_PATH", os.path.join(data_dir, "predicciones_inferencia.log"))
 
         registro_drift = {
@@ -1234,7 +1230,6 @@ def predict(input_data: List[InputParaElModelo]):
         with lock:
             CANTIDAD_LOGS_ACTUALES_REENTRENAMIENTO += 1
         
-        # Re-entrenamos el modelo según ciertas restricciones
         if RETRAINING_IN_PROGRESS:
             print("Re-entrenamiento ya en progreso. Se evaluará la necesidad de iniciar otro re-entrenamiento al finalizar el actual.")
             pass
@@ -1242,17 +1237,14 @@ def predict(input_data: List[InputParaElModelo]):
             print("Iniciando proceso de re-entrenamiento por cantidad de logs alcanzada...")
             retraining()
 
-        # Si la deriva está activa, damos prioridad al re-entrenamiento para intentar mitigarla lo antes posible
         elif drift_status_actual.get("alert_active", False):
             print("Iniciando proceso de re-entrenamiento por alerta de deriva activa...")
             retraining()
 
-        # Si ha pasado un tiempo considerable desde el último re-entrenamiento se inicia uno nuevo
         elif time.time() - ULTIMO_REENTRENAMIENTO_TIMESTAMP >= REENTRENAMIENTO_INTERVALO:
             print("Iniciando proceso de re-entrenamiento por intervalo de tiempo alcanzado...")
             retraining()
 
-        
         return {
             "prediccion": prediccion_decodificada,
             "prediccion_codificada": prediccion.tolist(),

@@ -7,13 +7,10 @@ def ingesta_datos(output_path):
 
     print("Iniciando la ingesta de datos...")
     try:
-        # Comprobación de la carpeta de salida
         if not os.path.exists(output_path):
             os.makedirs(output_path)
             print(f"Carpeta de salida creada: {output_path}")
 
-
-        # Descargar el dataset desde Kaggle utilizando kagglehub (ya en CSV)
         kagglehub.dataset_download("munaalhawawreh/xiiotid-iiot-intrusion-dataset", output_dir = output_path)
         print("Dataset descargado exitosamente.")
         return True

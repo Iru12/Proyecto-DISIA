@@ -8,11 +8,9 @@ from preprocesamiento import preprocesamiento_inferencia
 class modelo_deteccion_anomalias:
     def __init__(self, modelo_path):
         
-        # Comprobación de la existencia del archivo del modelo
         if not os.path.isfile(modelo_path):
             raise FileNotFoundError(f"El archivo del modelo no existe: {modelo_path}")
         
-        # Cargar el modelo entrenado
         self.modelo = joblib.load(modelo_path)
 
         print("Modelo de detección de anomalías cargado exitosamente.")
@@ -27,7 +25,6 @@ class modelo_deteccion_anomalias:
 
 
 if __name__ == "__main__":
-    # Ejemplo de datos de prueba para la inferencia
     """
     dato_prueba = [
     {
@@ -340,17 +337,13 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Crear instancia del modelo de detección de anomalías
     modelo = modelo_deteccion_anomalias(args.modelo_path)
-    # Cargar datos de entrada
     X_input = pd.DataFrame(args.input_data)
     X_input = preprocesamiento_inferencia(X_input, args.artefactos_path)
-    # Realizar predicciones
     predicciones = modelo.predecir(X_input)
     print("Predicciones realizadas exitosamente.")
     print(predicciones)
 
-    # Guardar predicciones en un archivo CSV
     output_pred_path = "predicciones/predicciones_test.csv"
     os.makedirs(os.path.dirname(output_pred_path), exist_ok=True)
     pd.DataFrame(predicciones, columns=["prediccion"]).to_csv(output_pred_path, index=False)
